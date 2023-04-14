@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::path::PathBuf;
+use crate::filesystem::*;
 
-struct Process {
+pub struct Process {
     open_files: HashMap<FileDescriptor, OpenFile>,
     fds: FileDescriptor,
 }

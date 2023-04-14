@@ -2,6 +2,9 @@
 name = "wasm-vfs"
 version = "0.1.0"
 edition = "2021"
+description = "a Virtual Filesystem layer for Wasm Applications"
+license = "Apache-2.0"
+repository = "https://github.com/dphilla/wasm-vfs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -9,3 +12,4 @@ edition = "2021"
 
 [lib]
 path = "src/lib.rs"
+
