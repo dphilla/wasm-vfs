@@ -21,16 +21,16 @@ pub type Inode = u64;
 pub type FileDescriptor = i32;
 
 #[derive(Debug)]
-struct File {
-    inode: Inode,
-    data: Mutex<Vec<u8>>,
-    path: PathBuf
-
+pub struct File {
+    pub inode: Inode,
+    pub data: Mutex<Vec<u8>>,
+    pub position: u64,
+    pub path: PathBuf
 }
 
-struct OpenFile {
-    file: Arc<File>,
-    position: u64,
+pub struct OpenFile {
+    pub file: Arc<File>,
+    pub position: u64,
 }
 
 impl Read for OpenFile {
@@ -59,9 +59,9 @@ impl Write for OpenFile {
     }
 }
 
-struct FileSystem {
-    files: HashMap<Inode, Arc<File>>,
-    inodes: Inode,
+pub struct FileSystem {
+    pub files: HashMap<Inode, Arc<File>>,
+    pub inodes: Inode,
 }
 
 impl FileSystem {
@@ -87,9 +87,11 @@ impl FileSystem {
         let inode = self.inodes;
         let data = Mutex::new(raw_data);
         let mut path = PathBuf::new();
-        let file = File { inode, data, path};
+        let mut position = 0;
+        let file = File { inode, data, path, position};
         self.files.insert(inode, Arc::new(file));
         self.inodes += 1;
         inode
     }
 }
+
