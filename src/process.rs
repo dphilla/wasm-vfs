@@ -65,11 +65,11 @@ impl Process {
        open_file.write(buf).map_err(|_| ())
     }
 
-    pub fn close(&mut self, fd: FileDescriptor) -> Result<(), ()> {
+    pub fn close(&mut self, fd: FileDescriptor) -> Result<i32> {
         if self.open_files.remove(&fd).is_some() {
-            Ok(())
+            Ok(0)
         } else {
-            Err(())
+            Err(-1)
         }
     }
 }
