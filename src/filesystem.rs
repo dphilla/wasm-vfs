@@ -45,7 +45,7 @@ impl Read for OpenFile {
 
 impl Write for OpenFile {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-         let mut file_data = self.file.data.lock().unwrap();
+        let mut file_data = self.file.data.lock().unwrap();
         let new_size = std::cmp::max(file_data.len(), self.position as usize + buf.len());
         file_data.resize(new_size, 0);
         file_data[self.position as usize..self.position as usize + buf.len()]
@@ -58,6 +58,32 @@ impl Write for OpenFile {
         Ok(())
     }
 }
+
+impl OpenFile {
+    pub fn lseek(&mut self, pos: i64, whence: i32) -> Result<u64, &'static str> {
+        let mut file_data = self.file.lock().unwrap();
+        let file_len = file_data.data.len() as i64;
+
+        //SEEK_SET (0) seeks from the beginning of the file.
+        //SEEK_CUR (1) seeks from the current file position.
+        //SEEK_END (2) seeks from the end of the file.
+        let new_pos = match whence {
+            0 => pos,
+            1 => self.position as i64 + pos,
+            2 => file_len + pos,
+            _ => return Err("invalid whence"),
+        };
+
+        if new_pos < 0 || new_pos > file_len {
+            return Err("invalid position");
+        }
+
+        self.position = new_pos as u64;
+
+        Ok(self.position)
+    }
+}
+
 
 pub struct FileSystem {
     pub files: HashMap<Inode, Arc<File>>,

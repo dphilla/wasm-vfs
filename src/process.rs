@@ -65,7 +65,7 @@ impl Process {
        open_file.write(buf).map_err(|_| ())
     }
 
-    pub fn close(&mut self, fd: FileDescriptor) -> Result<i32> {
+    pub fn close(&mut self, fd: FileDescriptor) -> Result<i32, i32> {
         if self.open_files.remove(&fd).is_some() {
             Ok(0)
         } else {

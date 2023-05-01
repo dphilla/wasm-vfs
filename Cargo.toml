@@ -1,6 +1,6 @@
 [package]
 name = "wasm-vfs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "a Virtual Filesystem layer for Wasm Applications"
 license = "Apache-2.0"
