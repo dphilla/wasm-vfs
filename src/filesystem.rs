@@ -119,5 +119,18 @@ impl FileSystem {
         self.inodes += 1;
         inode
     }
+
+    pub fn unlink(&mut self, path: &PathBuf) -> Result<(), &'static str> {
+        // Find the file's inode based on its path
+        let inode = self.lookup_inode(path).ok_or("file not found")?;
+
+        // Remove the file from the filesystem's list of files
+        if self.files.remove(&inode).is_none() {
+            return Err("file not found");
+        }
+
+        Ok(())
+    }
+
 }
 
