@@ -18,6 +18,22 @@ pub type Inode = u64;
     // etc.
 //}
 
+pub struct Stat {
+    pub st_dev: u64,        // ID of device containing file
+    pub st_ino: u64,        // inode number
+    pub st_mode: u16,       // protection
+    pub st_nlink: u16,      // number of hard links
+    pub st_uid: u32,        // user ID of owner
+    pub st_gid: u32,        // group ID of owner
+    pub st_rdev: u64,       // device ID (if special file)
+    pub st_size: i64,       // total size, in bytes
+    pub st_blksize: i32,    // blocksize for file system I/O
+    pub st_blocks: i64,     // number of 512B blocks allocated
+    pub st_atime: i64,      // time of last access
+    pub st_mtime: i64,      // time of last modification
+    pub st_ctime: i64,      // time of last status change
+}
+
 pub type FileDescriptor = i32;
 
 #[derive(Debug)]
@@ -82,12 +98,15 @@ impl OpenFile {
 
         Ok(self.position)
     }
+
 }
 
-
+// for now, there is a 1:1 with files:inodes, bc: its a VFS
+// in the future, a separation of files via OpenFile and File (possibly in a layer
+// representing more persistent storage, could be possible)
 pub struct FileSystem {
     pub files: HashMap<Inode, Arc<File>>,
-    pub inodes: Inode,
+    pub inodes: Inode, // correct?
 }
 
 impl FileSystem {
@@ -129,8 +148,27 @@ impl FileSystem {
             return Err("file not found");
         }
 
+        // sync?
+        // same with close(), should write to somewhere? right? from the docs:
+
+        //When a file is unlinked, the entry for the file is removed from the file system's directory.
+        //The blocks or sectors on the disk that were used by the file's data are not immediately removed
+        //or overwritten, but are marked as available for reuse. In other words, the data still exists
+        //on the disk, but it is not accessible through the file system. It is possible for data recovery
+        //software to recover deleted files from these blocks or sectors. However, eventually, when the
+        //blocks or sectors are reused for other files, the old data will be overwritten and permanently lost.
         Ok(())
     }
 
-}
+    pub fn rename(&mut self, old_path: &PathBuf, new_path: &PathBuf) -> Result<(), &'static str> {
+        // Find the file's inode based on its old path
+        let inode = self.lookup_inode(old_path).ok_or("file not found")?;
 
+        // Update the file's path to the new path
+        let file = self.files.get(&inode).ok_or("file not found")?;
+        let mut file = file.lock().unwrap();
+        file.path = new_path.clone();
+
+        Ok(())
+    }
+}
