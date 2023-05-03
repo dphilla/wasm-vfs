@@ -3,20 +3,69 @@ use std::sync::{Arc, Mutex};
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::path::PathBuf;
 
-pub type Inode = u64;
+#[derive(Debug)]
+pub struct Inode {
+    number: u64,
+    size: u64,
+    permissions: Permissions,
+    user_id: u32,
+    group_id: u32,
+    ctime: u64,
+    mtime: u64,
+    atime: u64,
+    // etc
+}
 
-// future implementation
-//struct Inode {
-    //number: u64,
-    //size: u64,
-    //permissions: Permissions,
-    //user_id: u32,
-    //group_id: u32,
-    //ctime: SystemTime,
-    //mtime: SystemTime,
-    //atime: SystemTime,
-    // etc.
-//}
+impl Inode {
+    fn new(number: u64, size: u64, permissions: Permissions, user_id: u32, group_id: u32, ctime: u64, mtime: u64, atime: u64) -> Self {
+        Inode {
+            number,
+            size,
+            permissions,
+            user_id,
+            group_id,
+            ctime,
+            mtime,
+            atime,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Permissions {
+    owner: Permission,
+    group: Permission,
+    other: Permission,
+}
+
+#[derive(Debug)]
+pub struct Permission {
+    read: bool,
+    write: bool,
+    execute: bool,
+}
+
+impl From<u16> for Permissions {
+    fn from(mode: u16) -> Self {
+        Self {
+            owner: Permission {
+                read: (mode & 0o400) != 0,
+                write: (mode & 0o200) != 0,
+                execute: (mode & 0o100) != 0,
+            },
+            group: Permission {
+                read: (mode & 0o40) != 0,
+                write: (mode & 0o20) != 0,
+                execute: (mode & 0o10) != 0,
+            },
+            other: Permission {
+                read: (mode & 0o4) != 0,
+                write: (mode & 0o2) != 0,
+                execute: (mode & 0o1) != 0,
+            },
+        }
+    }
+}
 
 pub struct Stat {
     pub st_dev: u64,        // ID of device containing file
@@ -106,7 +155,7 @@ impl OpenFile {
 // representing more persistent storage, could be possible)
 pub struct FileSystem {
     pub files: HashMap<Inode, Arc<File>>,
-    pub inodes: Inode, // correct?
+    pub next_inode_number: u32
 }
 
 impl FileSystem {
@@ -129,7 +178,7 @@ impl FileSystem {
     }
 
     pub fn create_file(&mut self, raw_data: Vec<u8>) -> Inode {
-        let inode = self.inodes;
+        let inode = Inode::new(1, 1024, Permissions::default(), 0, 0, 0, 0, 0);
         let data = Mutex::new(raw_data);
         let mut path = PathBuf::new();
         let mut position = 0;
