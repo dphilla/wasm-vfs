@@ -177,6 +177,34 @@ impl FileSystem {
         }
     }
 
+    pub fn fstat(&self, fd: FileDescriptor) -> Result<Stat, &'static str> {
+        let file = self.get_file(fd)?;
+
+        let metadata = file.metadata().map_err(|_| "failed to get file metadata")?;
+
+        Ok(Stat {
+            st_dev: metadata.dev(),
+            st_ino: metadata.ino(),
+            st_mode: metadata.mode(),
+            st_nlink: metadata.nlink() as u16,
+            st_uid: metadata.uid(),
+            st_gid: metadata.gid(),
+            st_rdev: metadata.rdev(),
+            st_size: metadata.size() as i64,
+            st_blksize: metadata.blksize(),
+            st_blocks: metadata.blocks() as i64,
+            st_atime: metadata.atime(),
+            st_mtime: metadata.mtime(),
+            st_ctime: metadata.ctime(),
+        })
+    }
+
+    fn get_file(&self, fd: FileDescriptor) -> Result<Arc<File>, &'static str> {
+        let inode = Inode { number: fd as u64, ..Default::default() };
+        self.files.get(&inode).ok_or("invalid file descriptor")
+            .map(|file| file.clone())
+    }
+
     pub fn create_file(&mut self, raw_data: Vec<u8>) -> Inode {
         let inode = Inode::new(1, 1024, Permissions::default(), 0, 0, 0, 0, 0);
         let data = Mutex::new(raw_data);
