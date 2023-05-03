@@ -2,6 +2,71 @@
 mod tests {
     use super::*;
 
+    //OpenFile tests
+    //-------------
+
+     fn read_returns_data_from_file() {
+        let data = vec![0, 1, 2, 3, 4, 5];
+        let file = File {
+            inode: Inode::new(1, data.len() as u64, Permissions::default(), 0, 0, 0, 0, 0),
+            data: Mutex::new(data.clone()),
+            position: 0,
+            path: PathBuf::new(),
+        };
+        let open_file = OpenFile {
+            file: Arc::new(file),
+            position: 0,
+        };
+        let mut buf = [0u8; 3];
+        let bytes_read = open_file.read(&mut buf).unwrap();
+        assert_eq!(bytes_read, 3);
+        assert_eq!(buf, [0, 1, 2]);
+    }
+
+    #[test]
+    fn write_appends_data_to_file() {
+        let data = vec![0, 1, 2];
+        let file = File {
+            inode: Inode::new(1, data.len() as u64, Permissions::default(), 0, 0, 0, 0, 0),
+            data: Mutex::new(data.clone()),
+            position: 0,
+            path: PathBuf::new(),
+        };
+        let open_file = OpenFile {
+            file: Arc::new(file),
+            position: 3,
+        };
+        let bytes_written = open_file.write(&[3, 4, 5]).unwrap();
+        assert_eq!(bytes_written, 3);
+        let file_data = open_file.file.data.lock().unwrap();
+        assert_eq!(*file_data, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn lseek_sets_file_position() {
+        let data = vec![0, 1, 2, 3, 4, 5];
+        let file = File {
+            inode: Inode::new(1, data.len() as u64, Permissions::default(), 0, 0, 0, 0, 0),
+            data: Mutex::new(data.clone()),
+            position: 0,
+            path: PathBuf::new(),
+        };
+        let open_file = OpenFile {
+            file: Arc::new(file),
+            position: 0,
+        };
+        let new_pos = open_file.lseek(3, 0).unwrap();
+        assert_eq!(new_pos, 3);
+        let mut buf = [0u8; 3];
+        let bytes_read = open_file.read(&mut buf).unwrap();
+        assert_eq!(bytes_read, 3);
+        assert_eq!(buf, [3, 4, 5]);
+    }
+
+
+    //FS tests
+    //--------
+
     #[test]
     fn test_filesystem_lookup_inode() {
         let mut fs = FileSystem::new();
