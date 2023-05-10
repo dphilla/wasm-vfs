@@ -24,9 +24,12 @@ impl Inode {
             permissions,
             user_id,
             group_id,
-            ctime,
-            mtime,
-            atime,
+            // time is not measureable in Wasm alone;
+            // workarounds with n instructions executed,
+            // forthcoming
+            0, //ctime
+            0, //mtime
+            0, //atime
         }
     }
 }
