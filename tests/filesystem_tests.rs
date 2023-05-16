@@ -65,7 +65,7 @@ mod tests {
 
 
     //FS file tests
-    //--------
+    //-------------
 
     #[test]
     fn test_filesystem_lookup_inode() {
@@ -138,6 +138,9 @@ mod tests {
         let file = fs.files.get(&inode).unwrap();
         assert_eq!(file.path, new_path);
     }
+
+    //FS dir tests
+    //------------
 
     #[test]
     fn test_mkdir() {
