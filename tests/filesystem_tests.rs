@@ -64,7 +64,7 @@ mod tests {
     }
 
 
-    //FS tests
+    //FS file tests
     //--------
 
     #[test]
@@ -137,5 +137,40 @@ mod tests {
 
         let file = fs.files.get(&inode).unwrap();
         assert_eq!(file.path, new_path);
+    }
+
+    #[test]
+    fn test_mkdir() {
+        let mut fs = FileSystem::new();
+
+        // Test creating a directory
+        let path = PathBuf::from("/dir");
+        assert!(fs.mkdir(&path).is_ok());
+
+        // Test that the directory was created
+        assert!(fs.files.contains_key(&Inode::from(1)));
+
+        // Test creating a subdirectory
+        let path = PathBuf::from("/dir/subdir");
+        assert!(fs.mkdir(&path).is_ok());
+
+        // Test that the subdirectory was created
+        assert!(fs.files.contains_key(&Inode::from(2)));
+
+        // Test that the subdirectory was added to the parent directory's children
+        if let Some(parent_file) = fs.files.get(&Inode::from(1)) {
+            if let InodeKind::Directory(children) = &parent_file.inode.kind {
+                assert_eq!(children.len(), 1);
+                assert_eq!(children[0], Inode::from(2));
+            } else {
+                panic!("parent inode is not a directory");
+            }
+        } else {
+            panic!("parent directory not found");
+        }
+
+        // Test trying to create a directory that already exists
+        let path = PathBuf::from("/dir");
+        assert!(fs.mkdir(&path).is_err());
     }
 }
