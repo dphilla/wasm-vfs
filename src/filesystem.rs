@@ -4,6 +4,13 @@ use std::io::{Read, Write, Seek, SeekFrom};
 use std::path::PathBuf;
 
 #[derive(Debug)]
+pub enum InodeKind {
+    File,
+    Directory,
+    SymbolicLink(PathBuf),
+}
+
+#[derive(Debug)]
 pub struct Inode {
     number: u64,
     size: u64,
@@ -13,11 +20,12 @@ pub struct Inode {
     ctime: u64,
     mtime: u64,
     atime: u64,
-    // etc
+    kind: InodeKind,
+    children: Vec<Inode>,
 }
 
 impl Inode {
-    fn new(number: u64, size: u64, permissions: Permissions, user_id: u32, group_id: u32, ctime: u64, mtime: u64, atime: u64) -> Self {
+    fn new(number: u64, size: u64, permissions: Permissions, user_id: u32, group_id: u32, ctime: u64, mtime: u64, atime: u64, kind: InodeKind) -> Self {
         Inode {
             number,
             size,
@@ -30,6 +38,8 @@ impl Inode {
             0, //ctime
             0, //mtime
             0, //atime
+            kind,
+            children: vec![],
         }
     }
 }
@@ -153,7 +163,7 @@ impl OpenFile {
 
 }
 
-// for now, there is a 1:1 with files:inodes, bc: its a VFS
+// for now, there is a 1:1 with files:inodes, bc its a VFS
 // in the future, a separation of files via OpenFile and File (possibly in a layer
 // representing more persistent storage, could be possible)
 pub struct FileSystem {
@@ -168,6 +178,10 @@ impl FileSystem {
             inodes: 1,
         }
     }
+
+    // --------------------
+    // File Operations
+    // --------------------
 
     pub fn lookup_inode(&mut self, path: &PathBuf) -> Option<Inode> {
         let inode = self.files
@@ -274,4 +288,54 @@ impl FileSystem {
 
         Ok(())
     }
+
+
+    // --------------------
+    // Directory Operations
+    // --------------------
+
+    pub fn mkdir(&mut self, path: &PathBuf) -> Result<(), &'static str> {
+        // Check if a file or directory already exists at the provided path
+        if self.files.values().any(|file| file.path == *path) {
+            return Err("File or directory already exists");
+        }
+
+        // Create new directory inode
+        let inode = Inode::new(
+            self.next_inode_number.into(),
+            0,
+            Permissions::from(0o755), // typical permissions for a directory
+            0,
+            0,
+            0,
+            0,
+            0,
+            InodeKind::Directory(),
+        );
+
+        let file = File {
+            inode: inode.clone(),
+            data: Mutex::new(Vec::new()), // no actual data in a directory
+            path: path.clone(),
+            position: 0,
+        };
+
+        // Insert new directory into filesystem's files
+        self.files.insert(inode.clone(), Arc::new(file));
+        self.next_inode_number += 1;
+
+        // Add new directory to its parent's children
+        if let Some(parent_path) = path.parent() {
+            if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
+                if let Some(parent_file) = self.files.get_mut(&parent_inode) {
+                    if let InodeKind::Directory(children) = &mut parent_file.inode.kind {
+                        children.push(inode.clone());
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
 }
