@@ -11,6 +11,12 @@ pub enum InodeKind {
 }
 
 #[derive(Debug)]
+pub struct DirectoryEntry {
+    name: String,
+    inode: Inode,
+}
+
+#[derive(Debug)]
 pub struct Inode {
     number: u64,
     size: u64,
@@ -21,7 +27,7 @@ pub struct Inode {
     mtime: u64,
     atime: u64,
     kind: InodeKind,
-    children: Vec<Inode>,
+    children: Vec<DirectoryEntry>,
 }
 
 impl Inode {
@@ -32,9 +38,9 @@ impl Inode {
             permissions,
             user_id,
             group_id,
-            0, //ctim  // no time concept Wasm alone
-            0, //mtime    // (wasm-only workarounds pending)
-            0, //atime    //
+            0, //ctim  // no time concept Wasm alone (wasm-only workarounds pending)
+            0, //mtime
+            0, //atime
             kind,
             children: vec![],
         }
@@ -292,21 +298,22 @@ impl FileSystem {
             return Err("File or directory already exists");
         }
 
+        // Create new directory inode
         let inode = Inode::new(
             self.next_inode_number.into(),
             0,
-            Permissions::from(0o755),
+            Permissions::from(0o755), // typical perms for a directory
             0,
             0,
             0,
             0,
             0,
-            InodeKind::Directory(),
+            InodeKind::Directory(vec![]),
         );
 
         let file = File {
             inode: inode.clone(),
-            data: Mutex::new(Vec::new()),
+            data: Mutex::new(Vec::new()), // bc no actual data in a directory
             path: path.clone(),
             position: 0,
         };
@@ -319,7 +326,8 @@ impl FileSystem {
             if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
                 if let Some(parent_file) = self.files.get_mut(&parent_inode) {
                     if let InodeKind::Directory(children) = &mut parent_file.inode.kind {
-                        children.push(inode.clone());
+                        let dir_entry = DirectoryEntry { name: path.file_name().unwrap().to_str().unwrap().to_string(), inode: inode.clone() };
+                        children.push(dir_entry);
                     }
                 }
             }
@@ -327,32 +335,26 @@ impl FileSystem {
 
         Ok(())
     }
-
     pub fn rmdir(&mut self, path: &PathBuf) -> Result<(), &'static str> {
         let inode = self.lookup_inode(path).ok_or("directory not found")?;
 
-        let dir = self.files.get(&inode).ok_or("directory not found")?;
-
-        if let InodeKind::Directory(children) = &dir.inode.kind {
-            if !children.is_empty() {
-                return Err("directory is not empty");
+        let file = self.files.get(&inode).ok_or("directory not found")?;
+        if let InodeKind::Directory(dir_entries) = &file.inode.kind {
+            if !dir_entries.is_empty() {
+                return Err("Directory is not empty");
             }
         } else {
-            return Err("inode is not a directory");
+            return Err("Not a directory");
         }
 
-        if self.files.remove(&inode).is_none() {
-            return Err("directory not found");
-        }
+        self.files.remove(&inode);
 
         // Remove the directory from its parent's children
         if let Some(parent_path) = path.parent() {
             if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
                 if let Some(parent_file) = self.files.get_mut(&parent_inode) {
                     if let InodeKind::Directory(children) = &mut parent_file.inode.kind {
-                        if let Some(index) = children.iter().position(|&child_inode| child_inode == inode) {
-                            children.remove(index);
-                        }
+                        children.retain(|dir_entry| dir_entry.inode != inode);
                     }
                 }
             }
@@ -360,4 +362,5 @@ impl FileSystem {
 
         Ok(())
     }
+
 }
