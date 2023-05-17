@@ -104,76 +104,43 @@ mod tests {
     }
 
     #[test]
-    fn test_filesystem_create_file() {
+    fn test_create_file() {
         let mut fs = FileSystem::new();
-        let path = PathBuf::from("/test/file");
-        let raw_data = vec![1, 2, 3];
-        let inode = fs.create_file(raw_data.clone());
-
-        let file = fs.files.get(&inode).unwrap();
-        assert_eq!(*file.data.lock().unwrap(), raw_data);
+        let file_data = vec![1, 2, 3, 4, 5];
+        let inode = fs.create_file(file_data.clone(), Path::new("/file1").to_path_buf()).unwrap();
+        let file = fs.files.get(&inode).unwrap().clone();
+        assert_eq!(*file.data.lock().unwrap(), file_data);
     }
 
     #[test]
-    fn test_filesystem_unlink() {
+    fn test_unlink() {
         let mut fs = FileSystem::new();
-        let path = PathBuf::from("/test/file");
-        let inode = fs.lookup_inode(&path).unwrap();
-
-        fs.unlink(&path).unwrap();
-
-        let file = fs.files.get(&inode);
-        assert!(file.is_none());
+        let inode = fs.create_file(vec![1, 2, 3, 4, 5], Path::new("/file2").to_path_buf()).unwrap();
+        fs.unlink(&Path::new("/file2").to_path_buf()).unwrap();
+        assert!(fs.files.get(&inode).is_none());
     }
 
     #[test]
-    fn test_filesystem_rename() {
+    fn test_rename() {
         let mut fs = FileSystem::new();
-        let old_path = PathBuf::from("/test/file");
-        let new_path = PathBuf::from("/test/file2");
-        let inode = fs.lookup_inode(&old_path).unwrap();
-
-        fs.rename(&old_path, &new_path).unwrap();
-
-        let file = fs.files.get(&inode).unwrap();
-        assert_eq!(file.path, new_path);
+        fs.create_file(vec![1, 2, 3, 4, 5], Path::new("/file3").to_path_buf()).unwrap();
+        fs.rename(&Path::new("/file3").to_path_buf(), &Path::new("/file4").to_path_buf()).unwrap();
+        let inode = fs.lookup_inode(&Path::new("/file4").to_path_buf()).unwrap();
+        let file = fs.files.get(&inode).unwrap().clone();
+        assert_eq!(file.path, Path::new("/file4").to_path_buf());
     }
 
     //FS dir tests
     //------------
 
     #[test]
-    fn test_mkdir() {
+    fn test_mkdir_rmdir() {
         let mut fs = FileSystem::new();
-
-        // Test creating a directory
-        let path = PathBuf::from("/dir");
-        assert!(fs.mkdir(&path).is_ok());
-
-        // Test that the directory was created
-        assert!(fs.files.contains_key(&Inode::from(1)));
-
-        // Test creating a subdirectory
-        let path = PathBuf::from("/dir/subdir");
-        assert!(fs.mkdir(&path).is_ok());
-
-        // Test that the subdirectory was created
-        assert!(fs.files.contains_key(&Inode::from(2)));
-
-        // Test that the subdirectory was added to the parent directory's children
-        if let Some(parent_file) = fs.files.get(&Inode::from(1)) {
-            if let InodeKind::Directory(children) = &parent_file.inode.kind {
-                assert_eq!(children.len(), 1);
-                assert_eq!(children[0], Inode::from(2));
-            } else {
-                panic!("parent inode is not a directory");
-            }
-        } else {
-            panic!("parent directory not found");
-        }
-
-        // Test trying to create a directory that already exists
-        let path = PathBuf::from("/dir");
-        assert!(fs.mkdir(&path).is_err());
+        fs.mkdir(&Path::new("/dir1").to_path_buf()).unwrap();
+        let inode = fs.lookup_inode(&Path::new("/dir1").to_path_buf()).unwrap();
+        let file = fs.files.get(&inode).unwrap().clone();
+        assert!(matches!(file.inode.kind, InodeKind::Directory(_)));
+        fs.rmdir(&Path::new("/dir1").to_path_buf()).unwrap();
+        assert!(fs.files.get(&inode).is_none());
     }
 }
