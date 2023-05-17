@@ -32,17 +32,21 @@ pub struct Inode {
 
 impl Inode {
     fn new(number: u64, size: u64, permissions: Permissions, user_id: u32, group_id: u32, ctime: u64, mtime: u64, atime: u64, kind: InodeKind) -> Self {
+        let children = match &kind {
+            InodeKind::Directory => vec![DirectoryEntry { name: ".".to_string(), inode: Inode { number, size, permissions, user_id, group_id, ctime, mtime, atime, kind: InodeKind::Directory(vec![]) } }],
+            _ => vec![],
+        };
         Inode {
             number,
             size,
             permissions,
             user_id,
             group_id,
-            0, //ctim  // no time concept Wasm alone (wasm-only workarounds pending)
-            0, //mtime
-            0, //atime
+            ctime,
+            mtime,
+            atime,
             kind,
-            children: vec![],
+            children,
         }
     }
 }
@@ -248,16 +252,28 @@ impl FileSystem {
             .map(|file| file.clone())
     }
 
-    pub fn create_file(&mut self, raw_data: Vec<u8>) -> Inode {
-        let inode = Inode::new(1, 1024, Permissions::default(), 0, 0, 0, 0, 0);
+    pub fn create_file(&mut self, raw_data: Vec<u8>, path: &PathBuf) -> Inode {
+        let inode = Inode::new(1, 1024, Permissions::default(), 0, 0, 0, 0, 0, InodeKind::File);
         let data = Mutex::new(raw_data);
-        let mut path = PathBuf::new();
-        let mut position = 0;
-        let file = File { inode, data, path, position};
-        self.files.insert(inode, Arc::new(file));
-        self.inodes += 1;
+        let file = File { inode: inode.clone(), data, path: path.clone(), position: 0 };
+        self.files.insert(inode.clone(), Arc::new(file));
+        self.next_inode_number += 1;
+
+        // Add new file to its parent's children
+        if let Some(parent_path) = path.parent() {
+            if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
+                if let Some(parent_file) = self.files.get_mut(&parent_inode) {
+                    if let InodeKind::Directory(children) = &mut parent_file.inode.kind {
+                        let dir_entry = DirectoryEntry { name: path.file_name().unwrap().to_str().unwrap().to_string(), inode: inode.clone() };
+                        children.push(dir_entry);
+                    }
+                }
+            }
+        }
+
         inode
     }
+
 
     pub fn unlink(&mut self, path: &PathBuf) -> Result<(), &'static str> {
         let inode = self.lookup_inode(path).ok_or("file not found")?;
@@ -371,5 +387,4 @@ impl FileSystem {
 
         Ok(())
     }
-
 }
