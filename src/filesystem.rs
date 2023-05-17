@@ -262,8 +262,17 @@ impl FileSystem {
     pub fn unlink(&mut self, path: &PathBuf) -> Result<(), &'static str> {
         let inode = self.lookup_inode(path).ok_or("file not found")?;
 
-        if self.files.remove(&inode).is_none() {
-            return Err("file not found");
+        self.files.remove(&inode).ok_or("file not found")?;
+
+        // Remove the file from its parent's children
+        if let Some(parent_path) = path.parent() {
+            if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
+                if let Some(parent_file) = self.files.get_mut(&parent_inode) {
+                    if let InodeKind::Directory(children) = &mut parent_file.inode.kind {
+                        children.retain(|dir_entry| dir_entry.inode != inode);
+                    }
+                }
+            }
         }
 
         // sync?
