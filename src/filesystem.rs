@@ -176,6 +176,8 @@ impl OpenFile {
 pub struct FileSystem {
     pub files: HashMap<Inode, Arc<File>>,
     pub next_inode_number: u32
+    pub next_directory_descriptor: DirectoryDescriptor,
+    pub open_directories: HashMap<DirectoryDescriptor, OpenDirectory>,
 }
 
 impl FileSystem {
@@ -318,6 +320,13 @@ impl FileSystem {
     // Directory Operations
     // --------------------
 
+    pub type DirectoryDescriptor = i32;
+
+    pub struct OpenDirectory {
+        pub directory: Arc<Inode>,
+        pub position: usize,
+    }
+
     pub fn mkdir(&mut self, path: &PathBuf) -> Result<(), &'static str> {
         if self.files.values().any(|file| file.path == *path) {
             return Err("File or directory already exists");
@@ -386,5 +395,27 @@ impl FileSystem {
         }
 
         Ok(())
+    }
+
+    pub fn opendir(&mut self, path: &PathBuf) -> Result<DirectoryDescriptor, &'static str> {
+        let inode = self.lookup_inode(path).ok_or("directory not found")?;
+
+        // check if the inode is a directory
+        match self.files.get(&inode).unwrap().inode.kind {
+            InodeKind::Directory(_) => (),
+            _ => return Err("Not a directory"),
+        };
+
+        let directory_descriptor = self.next_directory_descriptor;
+        self.next_directory_descriptor += 1;
+
+        let open_directory = OpenDirectory {
+            directory: self.files.get(&inode).unwrap().clone(),
+            position: 0,
+        };
+
+        self.open_directories.insert(directory_descriptor, open_directory);
+
+        Ok(directory_descriptor)
     }
 }
