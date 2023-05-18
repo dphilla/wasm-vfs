@@ -143,4 +143,24 @@ mod tests {
         fs.rmdir(&Path::new("/dir1").to_path_buf()).unwrap();
         assert!(fs.files.get(&inode).is_none());
     }
+
+     #[test]
+    fn test_opendir() {
+        let mut fs = FileSystem::new();
+
+        // Create a new directory
+        let dir_path = PathBuf::from("/test_dir");
+        fs.mkdir(&dir_path).expect("Failed to create directory");
+
+        // Open the directory
+        let dir_descriptor = fs.opendir(&dir_path).expect("Failed to open directory");
+
+        // Verify the directory is opened
+        assert_eq!(dir_descriptor, 1);
+        assert!(fs.open_directories.contains_key(&dir_descriptor));
+
+        let open_dir = fs.open_directories.get(&dir_descriptor).unwrap();
+        assert_eq!(Arc::ptr_eq(&open_dir.directory, fs.files.get(&1).unwrap()), true);
+        assert_eq!(open_dir.position, 0);
+    }
 }
