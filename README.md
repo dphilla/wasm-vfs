@@ -96,7 +96,7 @@ Can be used with [wasm-libc](https://github.com/dphilla/wasm-libc) for (very bas
 - `inotify_add_watch`: Adds a watch to an inotify instance.
 - `inotify_rm_watch`: Removes a watch from an inotify instance.
 
-### File Synchronization (with integration other persistence layers/component/drivers)
+### File Synchronization
 - `sync`: This system call causes all pending modifications to filesystem metadata and data to be written out to the disk. This ensures that the state of the filesystem matches what the system has in its buffers, but it operates on the whole system, which can be a broad stroke if you're focused on a specific file or filesystem.
 - `fsync`: This system call is similar to sync, but it's more specific—it only affects the file referred to by the file descriptor passed to it. It causes all buffered data for that file to be written to the disk (or other permanent storage).
 - `fdatasync`: This is similar to fsync, but it only writes out the file's data, not its metadata (unless the metadata is needed to retrieve the data). This can be a bit faster than fsync if the metadata hasn't changed.
