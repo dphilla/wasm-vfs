@@ -1,6 +1,6 @@
 # wasm-vfs
 
-A Wasm-first VFS
+A Wasm-first Virtualized Filesystem
 
 ## Description
 
