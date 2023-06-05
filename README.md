@@ -19,7 +19,6 @@ Can be used with [wasm-libc](https://github.com/dphilla/wasm-libc) for (very bas
 - `openat`: Opens a file relative to a directory file descriptor.
 - `dup`: Duplicates a file descriptor.
 - `dup2`: Duplicates a file descriptor to a specific value.
-- `dup3`: Like dup2 but with additional flags.
 
 ### Reading and Writing
 - `read`: Reads data from a file descriptor.
@@ -76,8 +75,6 @@ Can be used with [wasm-libc](https://github.com/dphilla/wasm-libc) for (very bas
 - `ftruncate`: Like truncate but operates on a file descriptor.
 - `fallocate`: Allocates or deallocates space to a file descriptor.
 - `posix_fallocate`: Allocates space to a file descriptor, unlike fallocate, this is a synchronous operation.
-
-### File Locking
 - `flock`: Apply or remove an advisory lock on the open file referred to by the file descriptor.
 
 ### Memory Mapping
