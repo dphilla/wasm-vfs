@@ -28,7 +28,6 @@ Can be used with [wasm-libc](https://github.com/dphilla/wasm-libc) for (very bas
 - `sendfile`: Transfers data between two file descriptors.
 - `sendfile64`: Like sendfile but for large files.
 - `splice`: Moves data from one file descriptor to another.
-- `vmsplice`: Transfers data between user space and a pipe.
 - `readlink`: Reads the value of a symbolic link.
 - `readlinkat`: Like readlink but relative to a directory file descriptor.
 - `getdents`: This system call reads the contents of a directory into a buffer. It returns multiple directory entries in a single system call.
