@@ -176,6 +176,8 @@ impl OpenFile {
 pub struct FileSystem {
     pub files: HashMap<Inode, Arc<File>>,
     pub next_inode_number: u32
+    pub open_files: HashMap<FileDescriptor, OpenFile>,
+    pub next_fd: FileDescriptor,
     pub next_directory_descriptor: DirectoryDescriptor,
     pub open_directories: HashMap<DirectoryDescriptor, OpenDirectory>,
 }
@@ -201,6 +203,96 @@ impl FileSystem {
         } else {
             None
         }
+    }
+
+    fn get_inode(&self, fd: FileDescriptor) -> Result<&Inode, &'static str> {
+        let open_file = self.open_files.get(&fd).ok_or("invalid file descriptor")?;
+        Ok(&open_file.inode)
+    }
+
+    fn get_file(&self, fd: FileDescriptor) -> Result<Arc<File>, &'static str> {
+        let inode = Inode { number: fd as u64, ..Default::default() };
+        self.files.get(&inode).ok_or("invalid file descriptor")
+            .map(|file| file.clone())
+    }
+
+    pub fn create_file(&mut self, raw_data: Vec<u8>, path: &PathBuf) -> Inode {
+        let inode = Inode::new(1, 1024, Permissions::default(), 0, 0, 0, 0, 0, InodeKind::File);
+        let data = Mutex::new(raw_data);
+        let file = File { inode: inode.clone(), data, path: path.clone(), position: 0 };
+        self.files.insert(inode.clone(), Arc::new(file));
+        self.next_inode_number += 1;
+
+        // Add new file to its parent's children
+        if let Some(parent_path) = path.parent() {
+            if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
+                if let Some(parent_file) = self.files.get_mut(&parent_inode) {
+                    if let InodeKind::Directory(children) = &mut parent_file.inode.kind {
+                        let dir_entry = DirectoryEntry { name: path.file_name().unwrap().to_str().unwrap().to_string(), inode: inode.clone() };
+                        children.push(dir_entry);
+                    }
+                }
+            }
+        }
+
+        inode
+    }
+
+    // # Standard "Syscalls" (TODO: move)
+
+    // --------------------
+    // ## File Descriptor Management
+    // --------------------
+
+    pub fn open(&mut self, path: &PathBuf) -> Result<FileDescriptor, &'static str> {
+        let inode = self.lookup_inode(path).ok_or("file not found")?;
+        let file = self.files.get(&inode).ok_or("file not found")?;
+        let open_file = OpenFile {
+            inode: file.inode.clone(),
+            position: 0,
+        };
+        let fd = self.next_fd;
+        self.next_fd += 1;
+        self.open_files.insert(fd, open_file);
+        Ok(fd)
+    }
+
+    pub fn close(&mut self, fd: FileDescriptor) -> Result<(), &'static str> {
+        self.open_files.remove(&fd).ok_or("invalid file descriptor")?;
+        Ok(())
+    }
+
+    pub fn creat(&mut self, path: &PathBuf) -> Result<FileDescriptor, &'static str> {
+        let inode = self.create_file(Vec::new(), path);
+        let file = self.files.get(&inode).ok_or("file not found")?;
+        let open_file = OpenFile {
+            inode: file.inode.clone(),
+            position: 0,
+        };
+        let fd = self.next_fd;
+        self.next_fd += 1;
+        self.open_files.insert(fd, open_file);
+        Ok(fd)
+    }
+
+    pub fn openat(&mut self, dir_fd: FileDescriptor, path: &PathBuf, create: bool) -> Result<FileDescriptor, &'static str> {
+        let dir_inode = self.get_inode(dir_fd)?;
+        let full_path = dir_inode.path.join(path);
+        self.open(&full_path, create)
+    }
+
+    pub fn dup(&mut self, old_fd: FileDescriptor) -> Result<FileDescriptor, &'static str> {
+        let open_file = self.open_files.get(&old_fd).ok_or("invalid file descriptor")?.clone();
+        let new_fd = self.next_fd;
+        self.next_fd += 1;
+        self.open_files.insert(new_fd, open_file);
+        Ok(new_fd)
+    }
+
+    pub fn dup2(&mut self, old_fd: FileDescriptor, new_fd: FileDescriptor) -> Result<(), &'static str> {
+        let open_file = self.open_files.get(&old_fd).ok_or("invalid file descriptor")?.clone();
+        self.open_files.insert(new_fd, open_file);
+        Ok(())
     }
 
     pub fn fstat(&self, fd: FileDescriptor) -> Result<Stat, &'static str> {
@@ -248,35 +340,6 @@ impl FileSystem {
 
     }
 
-    fn get_file(&self, fd: FileDescriptor) -> Result<Arc<File>, &'static str> {
-        let inode = Inode { number: fd as u64, ..Default::default() };
-        self.files.get(&inode).ok_or("invalid file descriptor")
-            .map(|file| file.clone())
-    }
-
-    pub fn create_file(&mut self, raw_data: Vec<u8>, path: &PathBuf) -> Inode {
-        let inode = Inode::new(1, 1024, Permissions::default(), 0, 0, 0, 0, 0, InodeKind::File);
-        let data = Mutex::new(raw_data);
-        let file = File { inode: inode.clone(), data, path: path.clone(), position: 0 };
-        self.files.insert(inode.clone(), Arc::new(file));
-        self.next_inode_number += 1;
-
-        // Add new file to its parent's children
-        if let Some(parent_path) = path.parent() {
-            if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
-                if let Some(parent_file) = self.files.get_mut(&parent_inode) {
-                    if let InodeKind::Directory(children) = &mut parent_file.inode.kind {
-                        let dir_entry = DirectoryEntry { name: path.file_name().unwrap().to_str().unwrap().to_string(), inode: inode.clone() };
-                        children.push(dir_entry);
-                    }
-                }
-            }
-        }
-
-        inode
-    }
-
-
     pub fn unlink(&mut self, path: &PathBuf) -> Result<(), &'static str> {
         let inode = self.lookup_inode(path).ok_or("file not found")?;
 
@@ -314,7 +377,6 @@ impl FileSystem {
 
         Ok(())
     }
-
 
     // --------------------
     // Directory Operations

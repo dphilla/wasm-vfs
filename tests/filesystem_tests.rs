@@ -130,6 +130,8 @@ mod tests {
         assert_eq!(file.path, Path::new("/file4").to_path_buf());
     }
 
+    // FS descriptor management tests
+
     //FS dir tests
     //------------
 
