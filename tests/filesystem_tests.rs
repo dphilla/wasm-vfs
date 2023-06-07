@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     //OpenFile tests
     //-------------
@@ -131,6 +132,95 @@ mod tests {
     }
 
     // FS descriptor management tests
+
+    #[test]
+    fn test_open_close() {
+        let mut fs = FileSystem::new();
+        let path = PathBuf::from("/test");
+
+        // Open a non-existent file should fail
+        assert!(fs.open(&path).is_err());
+
+        // Create a new file
+        fs.creat(&path).unwrap();
+
+        // Open an existing file should succeed
+        let fd = fs.open(&path).unwrap();
+
+        // Close the file should succeed
+        assert!(fs.close(fd).is_ok());
+
+        // Close the file again should fail
+        assert!(fs.close(fd).is_err());
+    }
+
+    #[test]
+    fn test_creat() {
+        let mut fs = FileSystem::new();
+        let path = PathBuf::from("/test");
+
+        // Create a new file should succeed
+        let fd = fs.creat(&path).unwrap();
+
+        // Close the file should succeed
+        assert!(fs.close(fd).is_ok());
+
+        // Create the same file again should fail
+        assert!(fs.creat(&path).is_err());
+    }
+
+    #[test]
+    fn test_openat() {
+        let mut fs = FileSystem::new();
+        let dir_path = PathBuf::from("/dir");
+        let file_path = PathBuf::from("file");
+
+        // Create a new directory
+        fs.mkdir(&dir_path).unwrap();
+
+        // Open a directory should fail
+        assert!(fs.open(&dir_path).is_err());
+
+        // Open a file in the directory should fail
+        assert!(fs.openat(fs.open(&dir_path).unwrap(), &file_path).is_err());
+
+        // Create a new file in the directory
+        fs.creat(&dir_path.join(&file_path)).unwrap();
+
+        // Open a file in the directory should succeed
+        let fd = fs.openat(fs.open(&dir_path).unwrap(), &file_path).unwrap();
+
+        // Close the file should succeed
+        assert!(fs.close(fd).is_ok());
+    }
+
+    #[test]
+    fn test_dup_dup2() {
+        let mut fs = FileSystem::new();
+        let path = PathBuf::from("/test");
+
+        // Create a new file
+        let fd = fs.creat(&path).unwrap();
+
+        // Duplicate the file descriptor should succeed
+        let new_fd = fs.dup(fd).unwrap();
+
+        // Close the original file descriptor should succeed
+        assert!(fs.close(fd).is_ok());
+
+        // Close the duplicated file descriptor should succeed
+        assert!(fs.close(new_fd).is_ok());
+
+        // Duplicate a closed file descriptor should fail
+        assert!(fs.dup(fd).is_err());
+
+        // Duplicate to a specific file descriptor should succeed
+        assert!(fs.dup2(fd, new_fd).is_ok());
+
+        // Close the specific file descriptor should succeed
+        assert!(fs.close(new_fd).is_ok());
+    }
+
 
     //FS dir tests
     //------------
