@@ -488,4 +488,14 @@ impl FileSystem {
 
         Ok(directory_descriptor)
     }
+
+    // for future iterations, "disk" could by any other entity outside of module/component
+    fn sync_to_disk(&self) -> std::io::Result<()> {
+        //for file in self.files.values() {
+            //let data = file.data.lock().unwrap();
+            //let mut disk_file = std::fs::File::create(&file.path)?;
+            //disk_file.write_all(&data)?;
+        //}
+        Ok(())
+    }
 }
