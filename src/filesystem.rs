@@ -16,18 +16,18 @@ pub struct DirectoryEntry {
     inode: Inode,
 }
 
-#[derive(Debug)]
+#[derive(Eq, Hash, PartialEq, Debug, Clone, Default)]
 pub struct Inode {
-    number: u64,
-    size: u64,
-    permissions: Permissions,
-    user_id: u32,
-    group_id: u32,
-    ctime: u64,
-    mtime: u64,
-    atime: u64,
-    kind: InodeKind,
-    children: Vec<DirectoryEntry>,
+    pub number: u64,
+    pub size: u64,
+    pub permissions: Permissions,
+    pub user_id: u32,
+    pub group_id: u32,
+    pub ctime: u64,
+    pub mtime: u64,
+    pub atime: u64,
+    pub kind: InodeKind,
+    pub children: Vec<DirectoryEntry>,
 }
 
 impl Inode {
@@ -51,14 +51,14 @@ impl Inode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Permissions {
     owner: Permission,
     group: Permission,
     other: Permission,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Permission {
     read: bool,
     write: bool,
@@ -104,6 +104,7 @@ pub struct Stat {
 }
 
 pub type FileDescriptor = i32;
+pub type DirectoryDescriptor = i32;
 
 #[derive(Debug)]
 pub struct File {
@@ -113,6 +114,7 @@ pub struct File {
     pub path: PathBuf
 }
 
+#[derive(Clone)]
 pub struct OpenFile {
     pub file: Arc<File>,
     pub position: u64,
@@ -145,9 +147,10 @@ impl Write for OpenFile {
 }
 
 impl OpenFile {
+
     pub fn lseek(&mut self, pos: i64, whence: i32) -> Result<u64, &'static str> {
-        let mut file_data = self.file.lock().unwrap();
-        let file_len = file_data.data.len() as i64;
+        let mut file_data = self.file.data.lock().unwrap();
+        let file_len = file_data.len() as i64;
 
         //SEEK_SET (0) seeks from the beginning of the file.
         //SEEK_CUR (1) seeks from the current file position.
@@ -186,7 +189,11 @@ impl FileSystem {
     pub fn new() -> Self {
         Self {
             files: HashMap::new(),
-            inodes: 1,
+            next_inode_number: 1,
+            open_files:  HashMap::new(),
+            next_fd: 1,
+            next_directory_descriptor: 1,
+            open_directories:   HashMap::new(),
         }
     }
 
@@ -199,7 +206,7 @@ impl FileSystem {
             .iter()
             .find_map(|(&inode, file)| if file.path == *path { Some(inode) } else { None });
         if inode == None {
-            return Some(self.create_file(Vec::new()))
+            return Some(self.create_file(Vec::new(), path))
         } else {
             None
         }
@@ -207,13 +214,14 @@ impl FileSystem {
 
     fn get_inode(&self, fd: FileDescriptor) -> Result<&Inode, &'static str> {
         let open_file = self.open_files.get(&fd).ok_or("invalid file descriptor")?;
-        Ok(&open_file.inode)
+        Ok(&open_file.file.inode)
     }
 
+    // change to look up inode from fd
     fn get_file(&self, fd: FileDescriptor) -> Result<Arc<File>, &'static str> {
         let inode = Inode { number: fd as u64, ..Default::default() };
         self.files.get(&inode).ok_or("invalid file descriptor")
-            .map(|file| file.clone())
+            .map(|file| file.clone()) // need to clone?
     }
 
     pub fn create_file(&mut self, raw_data: Vec<u8>, path: &PathBuf) -> Inode {
@@ -238,17 +246,17 @@ impl FileSystem {
         inode
     }
 
-    // # Standard "Syscalls" (TODO: move)
+    // *** "Syscalls" ***
 
     // --------------------
-    // ## File Descriptor Management
+    // File Descriptor Management
     // --------------------
 
     pub fn open(&mut self, path: &PathBuf) -> Result<FileDescriptor, &'static str> {
         let inode = self.lookup_inode(path).ok_or("file not found")?;
         let file = self.files.get(&inode).ok_or("file not found")?;
         let open_file = OpenFile {
-            inode: file.inode.clone(),
+            file: file.clone(),
             position: 0,
         };
         let fd = self.next_fd;
@@ -266,7 +274,7 @@ impl FileSystem {
         let inode = self.create_file(Vec::new(), path);
         let file = self.files.get(&inode).ok_or("file not found")?;
         let open_file = OpenFile {
-            inode: file.inode.clone(),
+            file: file.clone(),
             position: 0,
         };
         let fd = self.next_fd;
@@ -276,69 +284,71 @@ impl FileSystem {
     }
 
     pub fn openat(&mut self, dir_fd: FileDescriptor, path: &PathBuf, create: bool) -> Result<FileDescriptor, &'static str> {
-        let dir_inode = self.get_inode(dir_fd)?;
-        let full_path = dir_inode.path.join(path);
-        self.open(&full_path, create)
+        let dir_file = self.get_file(dir_fd)?;
+        let full_path = dir_file.path.join(path);
+        if create {
+            self.creat(&full_path)
+        } else {
+            self.open(&full_path)
+        }
     }
 
+
     pub fn dup(&mut self, old_fd: FileDescriptor) -> Result<FileDescriptor, &'static str> {
-        let open_file = self.open_files.get(&old_fd).ok_or("invalid file descriptor")?.clone();
+        let open_file = self.open_files.get(&old_fd).ok_or("invalid file descriptor")?;
         let new_fd = self.next_fd;
         self.next_fd += 1;
-        self.open_files.insert(new_fd, open_file);
+        self.open_files.insert(new_fd, open_file.clone());
         Ok(new_fd)
     }
 
     pub fn dup2(&mut self, old_fd: FileDescriptor, new_fd: FileDescriptor) -> Result<(), &'static str> {
-        let open_file = self.open_files.get(&old_fd).ok_or("invalid file descriptor")?.clone();
-        self.open_files.insert(new_fd, open_file);
+        let open_file = self.open_files.get(&old_fd).ok_or("invalid file descriptor")?;
+        self.open_files.insert(new_fd, open_file.clone());
         Ok(())
     }
 
     pub fn fstat(&self, fd: FileDescriptor) -> Result<Stat, &'static str> {
         let file = self.get_file(fd)?;
-
-        let metadata = file.metadata().map_err(|_| "failed to get file metadata")?;
-
+        let inode = &file.inode;
         Ok(Stat {
-            st_dev: metadata.dev(),
-            st_ino: metadata.ino(),
-            st_mode: metadata.mode(),
-            st_nlink: metadata.nlink() as u16,
-            st_uid: metadata.uid(),
-            st_gid: metadata.gid(),
-            st_rdev: metadata.rdev(),
-            st_size: metadata.size() as i64,
-            st_blksize: metadata.blksize(),
-            st_blocks: metadata.blocks() as i64,
-            st_atime: metadata.atime(),
-            st_mtime: metadata.mtime(),
-            st_ctime: metadata.ctime(),
+            st_dev: 0, // This is a virtual file system, so device ID doesn't really apply
+            st_ino: inode.number,
+            st_mode: 0, // You'll need to convert permissions to a mode
+            st_nlink: 1, // Hard links aren't supported in this example
+            st_uid: inode.user_id,
+            st_gid: inode.group_id,
+            st_rdev: 0, // Device ID doesn't apply for regular files
+            st_size: inode.size as i64,
+            st_blksize: 0, // This is a virtual file system, so block size doesn't really apply
+            st_blocks: 0, // This is a virtual file system, so number of blocks doesn't really apply
+            st_atime: inode.atime as i64,
+            st_mtime: inode.mtime as i64,
+            st_ctime: inode.ctime as i64,
         })
     }
 
     pub fn stat(&self, path: &PathBuf) -> Result<Stat, &'static str> {
-        let file = self.get_file(fd)?;
-
-        let metadata = file.metadata().map_err(|_| "failed to get file metadata")?;
-
+        let inode = self.lookup_inode(path).ok_or("file not found")?;
+        let file = self.files.get(&inode).ok_or("file not found")?;
+        let inode = &file.inode;
         Ok(Stat {
-            st_dev: metadata.dev(),
-            st_ino: metadata.ino(),
-            st_mode: metadata.mode(),
-            st_nlink: metadata.nlink() as u16,
-            st_uid: metadata.uid(),
-            st_gid: metadata.gid(),
-            st_rdev: metadata.rdev(),
-            st_size: metadata.size() as i64,
-            st_blksize: metadata.blksize(),
-            st_blocks: metadata.blocks() as i64,
-            st_atime: metadata.atime(),
-            st_mtime: metadata.mtime(),
-            st_ctime: metadata.ctime(),
+            st_dev: 0, // This is a virtual file system, so device ID doesn't really apply
+            st_ino: inode.number,
+            st_mode: 0, // You'll need to convert permissions to a mode
+            st_nlink: 1, // Hard links aren't supported in this example
+            st_uid: inode.user_id,
+            st_gid: inode.group_id,
+            st_rdev: 0, // Device ID doesn't apply for regular files
+            st_size: inode.size as i64,
+            st_blksize: 0, // This is a virtual file system, so block size doesn't really apply
+            st_blocks: 0, // This is a virtual file system, so number of blocks doesn't really apply
+            st_atime: inode.atime as i64,
+            st_mtime: inode.mtime as i64,
+            st_ctime: inode.ctime as i64,
         })
-
     }
+
 
     pub fn unlink(&mut self, path: &PathBuf) -> Result<(), &'static str> {
         let inode = self.lookup_inode(path).ok_or("file not found")?;
@@ -372,7 +382,6 @@ impl FileSystem {
         let inode = self.lookup_inode(old_path).ok_or("file not found")?;
 
         let file = self.files.get(&inode).ok_or("file not found")?;
-        let mut file = file.lock().unwrap();
         file.path = new_path.clone();
 
         Ok(())
@@ -382,7 +391,6 @@ impl FileSystem {
     // Directory Operations
     // --------------------
 
-    pub type DirectoryDescriptor = i32;
 
     pub struct OpenDirectory {
         pub directory: Arc<Inode>,
@@ -404,7 +412,7 @@ impl FileSystem {
             0,
             0,
             0,
-            InodeKind::Directory(vec![]),
+            InodeKind::Directory
         );
 
         let file = File {
