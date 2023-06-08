@@ -1,6 +1,6 @@
 use std::sync::Once;
 use std::cell::UnsafeCell;
-use wasm_vfs::{Process, FileSystem, File};
+use crate::{Process, FileSystem};
 
 static mut FILESYSTEM: Option<UnsafeCell<FileSystem>> = None;
 static mut PROCESS: Option<UnsafeCell<Process>> = None;

@@ -1,11 +1,10 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use crate::filesystem::*;
 
 pub struct Process {
-    open_files: HashMap<FileDescriptor, Arc<OpenFile>>,
+    open_files: HashMap<FileDescriptor, OpenFile>,
     fds: FileDescriptor,
 }
 
@@ -30,22 +29,22 @@ impl Process {
         let fd = self.fds;
         self.open_files.insert(
             fd,
-            Arc::new(OpenFile {
-                file: Arc::clone(file),
+            OpenFile {
+                file: file.clone(),
                 position: 0,
-            }),
+            }
         );
         self.fds += 1;
         Ok(fd)
     }
 
     pub fn read(&mut self, fd: FileDescriptor, buf: &mut [u8]) -> Result<usize, ()> {
-        let open_file = self.open_files.get(&fd).ok_or(())?;
+        let open_file = self.open_files.get_mut(&fd).ok_or(())?;
         open_file.read(buf).map_err(|_| ())
     }
 
     pub fn write(&mut self, fd: FileDescriptor, buf: &[u8]) -> Result<usize, ()> {
-        let open_file = self.open_files.get(&fd).ok_or(())?;
+        let open_file = self.open_files.get_mut(&fd).ok_or(())?;
         open_file.write(buf).map_err(|_| ())
     }
 

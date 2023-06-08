@@ -1,16 +1,17 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::io::{Read, Write, Seek, SeekFrom};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
-#[derive(Debug)]
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub enum InodeKind {
+    #[default]
     File,
     Directory,
     SymbolicLink(PathBuf),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct DirectoryEntry {
     name: String,
     inode: Inode,
@@ -33,7 +34,7 @@ pub struct Inode {
 impl Inode {
     fn new(number: u64, size: u64, permissions: Permissions, user_id: u32, group_id: u32, ctime: u64, mtime: u64, atime: u64, kind: InodeKind) -> Self {
         let children = match &kind {
-            InodeKind::Directory => vec![DirectoryEntry { name: ".".to_string(), inode: Inode { number, size, permissions, user_id, group_id, ctime, mtime, atime, kind: InodeKind::Directory(vec![]) } }],
+            InodeKind::Directory => vec![DirectoryEntry { name: ".".to_string(), inode: Inode { number, size, permissions: permissions.clone(), user_id, group_id, ctime, mtime, atime, kind: InodeKind::Directory, children: vec![] }}],
             _ => vec![],
         };
         Inode {
@@ -51,14 +52,14 @@ impl Inode {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Clone, Hash, Eq)]
 pub struct Permissions {
     owner: Permission,
     group: Permission,
     other: Permission,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Clone, Hash, Eq)]
 pub struct Permission {
     read: bool,
     write: bool,
@@ -106,24 +107,29 @@ pub struct Stat {
 pub type FileDescriptor = i32;
 pub type DirectoryDescriptor = i32;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct File {
     pub inode: Inode,
-    pub data: Mutex<Vec<u8>>,
+    pub data: Vec<u8>,
     pub position: u64,
     pub path: PathBuf
 }
 
 #[derive(Clone)]
 pub struct OpenFile {
-    pub file: Arc<File>,
+    pub file: File,
     pub position: u64,
+}
+
+pub struct OpenDirectory {
+    pub directory: Inode,
+    pub position: usize,
 }
 
 impl Read for OpenFile {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let file_data = &self.file.data.lock().unwrap();
-        let bytes_to_read = std::cmp::min(buf.len(), (file_data.len() - self.position as usize));
+        let file_data = &self.file.data;
+        let bytes_to_read = std::cmp::min(buf.len(), file_data.len() - self.position as usize);
         buf[..bytes_to_read].copy_from_slice(&file_data[self.position as usize..(self.position + bytes_to_read as u64) as usize]);
         self.position += bytes_to_read as u64;
         Ok(bytes_to_read)
@@ -132,7 +138,7 @@ impl Read for OpenFile {
 
 impl Write for OpenFile {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut file_data = self.file.data.lock().unwrap();
+        let file_data = &mut self.file.data;
         let new_size = std::cmp::max(file_data.len(), self.position as usize + buf.len());
         file_data.resize(new_size, 0);
         file_data[self.position as usize..self.position as usize + buf.len()]
@@ -149,7 +155,7 @@ impl Write for OpenFile {
 impl OpenFile {
 
     pub fn lseek(&mut self, pos: i64, whence: i32) -> Result<u64, &'static str> {
-        let mut file_data = self.file.data.lock().unwrap();
+        let file_data = &mut self.file.data;
         let file_len = file_data.len() as i64;
 
         //SEEK_SET (0) seeks from the beginning of the file.
@@ -177,8 +183,8 @@ impl OpenFile {
 // in the future, a separation of files via OpenFile and File (possibly in a layer
 // representing more persistent storage, could be possible)
 pub struct FileSystem {
-    pub files: HashMap<Inode, Arc<File>>,
-    pub next_inode_number: u32
+    pub files: HashMap<Inode, File>,
+    pub next_inode_number: u32,
     pub open_files: HashMap<FileDescriptor, OpenFile>,
     pub next_fd: FileDescriptor,
     pub next_directory_descriptor: DirectoryDescriptor,
@@ -201,16 +207,6 @@ impl FileSystem {
     // File Operations
     // --------------------
 
-    pub fn lookup_inode(&mut self, path: &PathBuf) -> Option<Inode> {
-        let inode = self.files
-            .iter()
-            .find_map(|(&inode, file)| if file.path == *path { Some(inode) } else { None });
-        if inode == None {
-            return Some(self.create_file(Vec::new(), path))
-        } else {
-            None
-        }
-    }
 
     fn get_inode(&self, fd: FileDescriptor) -> Result<&Inode, &'static str> {
         let open_file = self.open_files.get(&fd).ok_or("invalid file descriptor")?;
@@ -218,7 +214,7 @@ impl FileSystem {
     }
 
     // change to look up inode from fd
-    fn get_file(&self, fd: FileDescriptor) -> Result<Arc<File>, &'static str> {
+    fn get_file(&self, fd: FileDescriptor) -> Result<File, &'static str> {
         let inode = Inode { number: fd as u64, ..Default::default() };
         self.files.get(&inode).ok_or("invalid file descriptor")
             .map(|file| file.clone()) // need to clone?
@@ -226,24 +222,35 @@ impl FileSystem {
 
     pub fn create_file(&mut self, raw_data: Vec<u8>, path: &PathBuf) -> Inode {
         let inode = Inode::new(1, 1024, Permissions::default(), 0, 0, 0, 0, 0, InodeKind::File);
-        let data = Mutex::new(raw_data);
+        let data = raw_data;
         let file = File { inode: inode.clone(), data, path: path.clone(), position: 0 };
-        self.files.insert(inode.clone(), Arc::new(file));
+        self.files.insert(inode.clone(), file);
         self.next_inode_number += 1;
 
         // Add new file to its parent's children
         if let Some(parent_path) = path.parent() {
             if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
                 if let Some(parent_file) = self.files.get_mut(&parent_inode) {
-                    if let InodeKind::Directory(children) = &mut parent_file.inode.kind {
+                    if let InodeKind::Directory = &mut parent_file.inode.kind {
                         let dir_entry = DirectoryEntry { name: path.file_name().unwrap().to_str().unwrap().to_string(), inode: inode.clone() };
-                        children.push(dir_entry);
+                        parent_file.inode.children.push(dir_entry);
                     }
                 }
             }
         }
 
         inode
+    }
+
+    pub fn lookup_inode(&mut self, path: &PathBuf) -> Option<Inode> {
+        let inode = self.files
+            .iter()
+            .find_map(|(inode, file)| if file.path == *path { Some(inode) } else { None });
+        if inode == None {
+            return Some(self.create_file(Vec::new(), path))
+        } else {
+            None
+        }
     }
 
     // *** "Syscalls" ***
@@ -328,7 +335,7 @@ impl FileSystem {
         })
     }
 
-    pub fn stat(&self, path: &PathBuf) -> Result<Stat, &'static str> {
+    pub fn stat(&mut self, path: &PathBuf) -> Result<Stat, &'static str> {
         let inode = self.lookup_inode(path).ok_or("file not found")?;
         let file = self.files.get(&inode).ok_or("file not found")?;
         let inode = &file.inode;
@@ -359,8 +366,8 @@ impl FileSystem {
         if let Some(parent_path) = path.parent() {
             if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
                 if let Some(parent_file) = self.files.get_mut(&parent_inode) {
-                    if let InodeKind::Directory(children) = &mut parent_file.inode.kind {
-                        children.retain(|dir_entry| dir_entry.inode != inode);
+                    if let InodeKind::Directory = &mut parent_file.inode.kind {
+                       parent_file.inode.children.retain(|dir_entry| dir_entry.inode != inode);
                     }
                 }
             }
@@ -381,7 +388,7 @@ impl FileSystem {
     pub fn rename(&mut self, old_path: &PathBuf, new_path: &PathBuf) -> Result<(), &'static str> {
         let inode = self.lookup_inode(old_path).ok_or("file not found")?;
 
-        let file = self.files.get(&inode).ok_or("file not found")?;
+        let file = self.files.get_mut(&inode).ok_or("file not found")?;
         file.path = new_path.clone();
 
         Ok(())
@@ -392,10 +399,6 @@ impl FileSystem {
     // --------------------
 
 
-    pub struct OpenDirectory {
-        pub directory: Arc<Inode>,
-        pub position: usize,
-    }
 
     pub fn mkdir(&mut self, path: &PathBuf) -> Result<(), &'static str> {
         if self.files.values().any(|file| file.path == *path) {
@@ -417,21 +420,21 @@ impl FileSystem {
 
         let file = File {
             inode: inode.clone(),
-            data: Mutex::new(Vec::new()), // bc no actual data in a directory
+            data: Vec::new(), // bc no actual data in a directory
             path: path.clone(),
             position: 0,
         };
 
-        self.files.insert(inode.clone(), Arc::new(file));
+        self.files.insert(inode.clone(), file);
         self.next_inode_number += 1;
 
         // Add new directory to its parent's children
         if let Some(parent_path) = path.parent() {
             if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
                 if let Some(parent_file) = self.files.get_mut(&parent_inode) {
-                    if let InodeKind::Directory(children) = &mut parent_file.inode.kind {
+                    if let InodeKind::Directory = &mut parent_file.inode.kind {
                         let dir_entry = DirectoryEntry { name: path.file_name().unwrap().to_str().unwrap().to_string(), inode: inode.clone() };
-                        children.push(dir_entry);
+                        parent_file.inode.children.push(dir_entry);
                     }
                 }
             }
@@ -443,8 +446,8 @@ impl FileSystem {
         let inode = self.lookup_inode(path).ok_or("directory not found")?;
 
         let file = self.files.get(&inode).ok_or("directory not found")?;
-        if let InodeKind::Directory(dir_entries) = &file.inode.kind {
-            if !dir_entries.is_empty() {
+        if let InodeKind::Directory = &file.inode.kind {
+            if !file.inode.children.is_empty() {
                 return Err("Directory is not empty");
             }
         } else {
@@ -457,8 +460,8 @@ impl FileSystem {
         if let Some(parent_path) = path.parent() {
             if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
                 if let Some(parent_file) = self.files.get_mut(&parent_inode) {
-                    if let InodeKind::Directory(children) = &mut parent_file.inode.kind {
-                        children.retain(|dir_entry| dir_entry.inode != inode);
+                    if let InodeKind::Directory = &mut parent_file.inode.kind {
+                        parent_file.inode.children.retain(|dir_entry| dir_entry.inode != inode);
                     }
                 }
             }
@@ -472,7 +475,7 @@ impl FileSystem {
 
         // check if the inode is a directory
         match self.files.get(&inode).unwrap().inode.kind {
-            InodeKind::Directory(_) => (),
+            InodeKind::Directory => (),
             _ => return Err("Not a directory"),
         };
 
@@ -480,7 +483,7 @@ impl FileSystem {
         self.next_directory_descriptor += 1;
 
         let open_directory = OpenDirectory {
-            directory: self.files.get(&inode).unwrap().clone(),
+            directory: inode.clone().into(),
             position: 0,
         };
 
