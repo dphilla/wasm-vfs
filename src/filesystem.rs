@@ -315,6 +315,63 @@ impl FileSystem {
         Ok(())
     }
 
+
+    // --------------------
+    // File Reading/Writing
+    // --------------------
+
+
+    pub fn read(&mut self, fd: FileDescriptor, buf: &mut [u8]) -> Result<usize, &'static str> {
+        let open_file = self.open_files.get_mut(&fd).ok_or("invalid file descriptor")?;
+        open_file.read(buf).map_err(|_| "read error")
+    }
+
+    pub fn write(&mut self, fd: FileDescriptor, buf: &[u8]) -> Result<usize, &'static str> {
+        let open_file = self.open_files.get_mut(&fd).ok_or("invalid file descriptor")?;
+        open_file.write(buf).map_err(|_| "write error")
+    }
+
+    pub fn pread64(&mut self, fd: FileDescriptor, buf: &mut [u8], offset: u64) -> Result<usize, &'static str> {
+        let open_file = self.open_files.get_mut(&fd).ok_or("invalid file descriptor")?;
+        let current_position = open_file.position;
+        open_file.position = offset;
+        let result = open_file.read(buf).map_err(|_| "read error");
+        open_file.position = current_position;
+        result
+    }
+
+    pub fn pwrite64(&mut self, fd: FileDescriptor, buf: &[u8], offset: u64) -> Result<usize, &'static str> {
+        let open_file = self.open_files.get_mut(&fd).ok_or("invalid file descriptor")?;
+        let current_position = open_file.position;
+        open_file.position = offset;
+        let result = open_file.write(buf).map_err(|_| "write error");
+        open_file.position = current_position;
+        result
+    }
+
+    pub fn sendfile(&mut self, out_fd: FileDescriptor, in_fd: FileDescriptor, offset: Option<&mut i64>, count: usize) -> Result<usize, &'static str> {
+        if !self.open_files.contains_key(&in_fd) || !self.open_files.contains_key(&out_fd) {
+            return Err("invalid file descriptor");
+        }
+
+        let mut buf = vec![0; count];
+        let read_count = {
+            let in_file = self.open_files.get_mut(&in_fd).unwrap();
+            in_file.read(&mut buf).map_err(|_| "read error")?
+        };
+        let write_count = {
+            let out_file = self.open_files.get_mut(&out_fd).unwrap();
+            out_file.write(&buf[..read_count]).map_err(|_| "write error")?
+        };
+
+        if let Some(offset) = offset {
+            *offset += read_count as i64;
+        }
+
+        Ok(write_count)
+    }
+
+
     pub fn fstat(&self, fd: FileDescriptor) -> Result<Stat, &'static str> {
         let file = self.get_file(fd)?;
         let inode = &file.inode;
