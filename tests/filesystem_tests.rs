@@ -250,18 +250,46 @@ mod tests {
         assert_eq!(&buf, data);
     }
 
-    #[test]
     fn test_sendfile() {
         let mut fs = FileSystem::new();
-        let path1 = PathBuf::from("/testfile1");
-        let path2 = PathBuf::from("/testfile2");
+
+        let path1 = PathBuf::from("/file1");
+        let path2 = PathBuf::from("/file2");
+
         let fd1 = fs.creat(&path1).unwrap();
         let fd2 = fs.creat(&path2).unwrap();
+
         let data = b"Hello, world!";
         fs.write(fd1, data).unwrap();
-        fs.sendfile(fd2, fd1, None, 13).unwrap();
-        let mut buf = vec![0; 13];
+
+        let count = fs.sendfile(fd2, fd1, None, data.len()).unwrap();
+        assert_eq!(count, data.len());
+
+        let mut buf = vec![0; data.len()];
         fs.read(fd2, &mut buf).unwrap();
+
+        assert_eq!(&buf, data);
+    }
+
+    #[test]
+    fn test_splice() {
+        let mut fs = FileSystem::new();
+
+        let path1 = PathBuf::from("/file1");
+        let path2 = PathBuf::from("/file2");
+
+        let fd1 = fs.creat(&path1).unwrap();
+        let fd2 = fs.creat(&path2).unwrap();
+
+        let data = b"Hello, world!";
+        fs.write(fd1, data).unwrap();
+
+        let count = fs.splice(fd1, None, fd2, None, data.len(), 0).unwrap();
+        assert_eq!(count, data.len());
+
+        let mut buf = vec![0; data.len()];
+        fs.read(fd2, &mut buf).unwrap();
+
         assert_eq!(&buf, data);
     }
 
