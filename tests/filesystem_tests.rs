@@ -222,6 +222,49 @@ mod tests {
     }
 
 
+    // --------------------
+    // File Reading/Writing
+    // --------------------
+
+    #[test]
+    fn test_read_write() {
+        let mut fs = FileSystem::new();
+        let path = PathBuf::from("/testfile");
+        let fd = fs.creat(&path).unwrap();
+        let data = b"Hello, world!";
+        fs.write(fd, data).unwrap();
+        let mut buf = vec![0; 13];
+        fs.read(fd, &mut buf).unwrap();
+        assert_eq!(&buf, data);
+    }
+
+    #[test]
+    fn test_pread_pwrite() {
+        let mut fs = FileSystem::new();
+        let path = PathBuf::from("/testfile");
+        let fd = fs.creat(&path).unwrap();
+        let data = b"Hello, world!";
+        fs.pwrite64(fd, data, 0).unwrap();
+        let mut buf = vec![0; 13];
+        fs.pread64(fd, &mut buf, 0).unwrap();
+        assert_eq!(&buf, data);
+    }
+
+    #[test]
+    fn test_sendfile() {
+        let mut fs = FileSystem::new();
+        let path1 = PathBuf::from("/testfile1");
+        let path2 = PathBuf::from("/testfile2");
+        let fd1 = fs.creat(&path1).unwrap();
+        let fd2 = fs.creat(&path2).unwrap();
+        let data = b"Hello, world!";
+        fs.write(fd1, data).unwrap();
+        fs.sendfile(fd2, fd1, None, 13).unwrap();
+        let mut buf = vec![0; 13];
+        fs.read(fd2, &mut buf).unwrap();
+        assert_eq!(&buf, data);
+    }
+
     //FS dir tests
     //------------
 

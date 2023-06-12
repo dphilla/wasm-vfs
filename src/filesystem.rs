@@ -350,25 +350,34 @@ impl FileSystem {
     }
 
     pub fn sendfile(&mut self, out_fd: FileDescriptor, in_fd: FileDescriptor, offset: Option<&mut i64>, count: usize) -> Result<usize, &'static str> {
-        if !self.open_files.contains_key(&in_fd) || !self.open_files.contains_key(&out_fd) {
-            return Err("invalid file descriptor");
+        self.splice(in_fd, None, out_fd, None, count, 0)
+    }
+
+    pub fn splice(&mut self, fd_in: FileDescriptor, off_in: Option<&mut u64>, fd_out: FileDescriptor, off_out: Option<&mut u64>, len: usize, flags: u32) -> Result<usize, &'static str> {
+        let mut buf = vec![0; len];
+        let mut total_bytes = 0;
+
+        if let Some(offset) = off_in {
+            let mut file_in = self.open_files.get_mut(&fd_in).ok_or("invalid input file descriptor")?;
+            file_in.lseek(*offset as i64, 0)?;
+            total_bytes += file_in.read(&mut buf).unwrap();
+            *offset += total_bytes as u64;
+        } else {
+            let mut file_in = self.open_files.get_mut(&fd_in).ok_or("invalid input file descriptor")?;
+            total_bytes += file_in.read(&mut buf).unwrap();
         }
 
-        let mut buf = vec![0; count];
-        let read_count = {
-            let in_file = self.open_files.get_mut(&in_fd).unwrap();
-            in_file.read(&mut buf).map_err(|_| "read error")?
-        };
-        let write_count = {
-            let out_file = self.open_files.get_mut(&out_fd).unwrap();
-            out_file.write(&buf[..read_count]).map_err(|_| "write error")?
-        };
-
-        if let Some(offset) = offset {
-            *offset += read_count as i64;
+        if let Some(offset) = off_out {
+            let mut file_out = self.open_files.get_mut(&fd_out).ok_or("invalid output file descriptor")?;
+            file_out.lseek(*offset as i64, 0)?;
+            total_bytes += file_out.write(&buf).unwrap();
+            *offset += total_bytes as u64;
+        } else {
+            let mut file_out = self.open_files.get_mut(&fd_out).ok_or("invalid output file descriptor")?;
+            total_bytes += file_out.write(&buf).unwrap();
         }
 
-        Ok(write_count)
+        Ok(total_bytes)
     }
 
 
