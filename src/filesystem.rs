@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::collections::HashMap; use std::io::{Read, Write};
 use std::path::PathBuf;
 
 
@@ -15,7 +14,15 @@ pub enum InodeKind {
 pub struct DirectoryEntry {
     name: String,
     inode: Inode,
+
+    // info below is more typical to flat-file
+    // impl of dirents may be used in future
+    offset: i64,
+    record_length: usize,
+    file_type: String,
 }
+
+
 
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Default)]
 pub struct Inode {
@@ -28,15 +35,10 @@ pub struct Inode {
     pub mtime: u64,
     pub atime: u64,
     pub kind: InodeKind,
-    pub children: Vec<DirectoryEntry>,
 }
 
 impl Inode {
     fn new(number: u64, size: u64, permissions: Permissions, user_id: u32, group_id: u32, ctime: u64, mtime: u64, atime: u64, kind: InodeKind) -> Self {
-        let children = match &kind {
-            InodeKind::Directory => vec![DirectoryEntry { name: ".".to_string(), inode: Inode { number, size, permissions: permissions.clone(), user_id, group_id, ctime, mtime, atime, kind: InodeKind::Directory, children: vec![] }}],
-            _ => vec![],
-        };
         Inode {
             number,
             size,
@@ -47,7 +49,6 @@ impl Inode {
             mtime,
             atime,
             kind,
-            children,
         }
     }
 }
@@ -112,7 +113,8 @@ pub struct File {
     pub inode: Inode,
     pub data: Vec<u8>,
     pub position: u64,
-    pub path: PathBuf
+    //pub path: PathBuf
+    pub dirents: Vec<DirectoryEntry>,
 }
 
 #[derive(Clone)]
@@ -184,23 +186,43 @@ impl OpenFile {
 // representing more persistent storage, could be possible)
 pub struct FileSystem {
     pub files: HashMap<Inode, File>,
-    pub next_inode_number: u32,
+    pub next_inode_number: u64,
     pub open_files: HashMap<FileDescriptor, OpenFile>,
     pub next_fd: FileDescriptor,
     pub next_directory_descriptor: DirectoryDescriptor,
     pub open_directories: HashMap<DirectoryDescriptor, OpenDirectory>,
+    pub root_inode: Inode
 }
 
 impl FileSystem {
     pub fn new() -> Self {
-        Self {
+
+         // Create root directory inode, and first file (directory)
+        let inode = Inode::new(1, 0, Permissions::default(), 0, 0, 0, 0, 0, InodeKind::Directory);
+        let file = File { inode: inode.clone(), data: Vec::new(), position: 0, dirents: vec![] };
+
+        let mut fs = Self {
             files: HashMap::new(),
             next_inode_number: 1,
             open_files:  HashMap::new(),
             next_fd: 1,
             next_directory_descriptor: 1,
             open_directories:   HashMap::new(),
-        }
+            root_inode: inode.clone(),
+        };
+
+        fs.next_inode_number += 1;
+        fs.files.insert(inode.clone(), file);
+
+        fs
+    }
+
+    fn create_directory(&mut self) -> Inode {
+        let inode = Inode::new(self.next_inode_number, 0, Permissions::default(), 0, 0, 0, 0, 0, InodeKind::Directory);
+        let file = File { inode: inode.clone(), data: Vec::new(), position: 0, dirents: vec![] };
+        self.files.insert(inode.clone(), file);
+        self.next_inode_number += 1;
+        inode
     }
 
     // --------------------
@@ -223,17 +245,18 @@ impl FileSystem {
     pub fn create_file(&mut self, raw_data: Vec<u8>, path: &PathBuf) -> Inode {
         let inode = Inode::new(1, 1024, Permissions::default(), 0, 0, 0, 0, 0, InodeKind::File);
         let data = raw_data;
-        let file = File { inode: inode.clone(), data, path: path.clone(), position: 0 };
+        let data_len = data.clone().len();
+        let file = File { inode: inode.clone(), data, position: 0, dirents: vec![] };
         self.files.insert(inode.clone(), file);
         self.next_inode_number += 1;
 
-        // Add new file to its parent's children
+        // Add new file and update the with the relevant directory entries
         if let Some(parent_path) = path.parent() {
             if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
                 if let Some(parent_file) = self.files.get_mut(&parent_inode) {
                     if let InodeKind::Directory = &mut parent_file.inode.kind {
-                        let dir_entry = DirectoryEntry { name: path.file_name().unwrap().to_str().unwrap().to_string(), inode: inode.clone() };
-                        parent_file.inode.children.push(dir_entry);
+                        let dirent = DirectoryEntry { inode: inode.clone(), offset: parent_file.dirents.len() as i64, record_length: data_len , file_type: "file".to_string(), name: path.file_name().unwrap().to_str().unwrap().to_string() };
+                        parent_file.dirents.push(dirent);
                     }
                 }
             }
@@ -243,14 +266,21 @@ impl FileSystem {
     }
 
     pub fn lookup_inode(&mut self, path: &PathBuf) -> Option<Inode> {
-        let inode = self.files
-            .iter()
-            .find_map(|(inode, file)| if file.path == *path { Some(inode) } else { None });
-        if inode == None {
-            return Some(self.create_file(Vec::new(), path))
-        } else {
-            None
+        let components = path.components().collect::<Vec<_>>();
+        let mut current_inode = self.root_inode.clone();
+
+        for component in components {
+            let filename = component.as_os_str().to_str().unwrap();
+            let file = self.files.get(&current_inode).unwrap();
+
+            if let Some(dirent) = file.dirents.iter().find(|dirent| dirent.name == filename) {
+                current_inode = Inode { number: dirent.inode.number, ..Default::default() };
+            } else {
+                return None;
+            }
         }
+
+        Some(current_inode)
     }
 
     // *** "Syscalls" ***
@@ -292,13 +322,28 @@ impl FileSystem {
 
     pub fn openat(&mut self, dir_fd: FileDescriptor, path: &PathBuf, create: bool) -> Result<FileDescriptor, &'static str> {
         let dir_file = self.get_file(dir_fd)?;
-        let full_path = dir_file.path.join(path);
+        let full_path = path;
         if create {
             self.creat(&full_path)
         } else {
-            self.open(&full_path)
+            let entry = dir_file.dirents.iter().find(|entry| entry.name == path.to_str().unwrap());
+            match entry {
+                Some(entry) => {
+                    let file = self.files.get(&entry.inode).ok_or("file not found")?;
+                    let open_file = OpenFile {
+                        file: file.clone(),
+                        position: 0,
+                    };
+                    let fd = self.next_fd;
+                    self.next_fd += 1;
+                    self.open_files.insert(fd, open_file);
+                    Ok(fd)
+                },
+                None => Err("file not found"),
+            }
         }
     }
+
 
 
     pub fn dup(&mut self, old_fd: FileDescriptor) -> Result<FileDescriptor, &'static str> {
@@ -380,7 +425,6 @@ impl FileSystem {
         Ok(total_bytes)
     }
 
-
     pub fn fstat(&self, fd: FileDescriptor) -> Result<Stat, &'static str> {
         let file = self.get_file(fd)?;
         let inode = &file.inode;
@@ -422,119 +466,67 @@ impl FileSystem {
         })
     }
 
-
-    pub fn unlink(&mut self, path: &PathBuf) -> Result<(), &'static str> {
-        let inode = self.lookup_inode(path).ok_or("file not found")?;
-
-        self.files.remove(&inode).ok_or("file not found")?;
-
-        // Remove the file from its parent's children
-        if let Some(parent_path) = path.parent() {
-            if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
-                if let Some(parent_file) = self.files.get_mut(&parent_inode) {
-                    if let InodeKind::Directory = &mut parent_file.inode.kind {
-                       parent_file.inode.children.retain(|dir_entry| dir_entry.inode != inode);
-                    }
-                }
-            }
+    pub fn mkdir(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
+        let parent_file = self.get_file(parent_fd)?;
+        if let InodeKind::Directory = parent_file.inode.kind {
+            let new_dir_inode = self.create_directory();
+            let new_dir_entry = DirectoryEntry { inode: new_dir_inode.clone(), offset: 0 as i64, record_length: 0, file_type: "dir".to_string(), name: name.to_string() };
+            let parent_file = self.files.get_mut(&parent_file.inode).ok_or("invalid file descriptor")?;
+            parent_file.dirents.push(new_dir_entry);
+            Ok(())
+        } else {
+            Err("not a directory")
         }
-
-        // sync?
-        // same with close(), should write to somewhere? right? from the docs:
-
-        //When a file is unlinked, the entry for the file is removed from the file system's directory.
-        //The blocks or sectors on the disk that were used by the file's data are not immediately removed
-        //or overwritten, but are marked as available for reuse. In other words, the data still exists
-        //on the disk, but it is not accessible through the file system. It is possible for data recovery
-        //software to recover deleted files from these blocks or sectors. However, eventually, when the
-        //blocks or sectors are reused for other files, the old data will be overwritten and permanently lost.
-        Ok(())
     }
+
+    pub fn rmdir(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
+        let parent_file = self.get_file(parent_fd)?;
+        if let InodeKind::Directory = parent_file.inode.kind {
+            let parent_file = self.files.get_mut(&parent_file.inode).ok_or("invalid file descriptor")?;
+            let index = parent_file.dirents.iter().position(|x| x.name == name).ok_or("directory not found")?;
+            let dir_entry = parent_file.dirents.remove(index);
+            self.files.remove(&dir_entry.inode);
+            Ok(())
+        } else {
+            Err("not a directory")
+        }
+    }
+
+    pub fn unlink(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
+        let parent_file = self.get_file(parent_fd)?;
+        if let InodeKind::Directory = parent_file.inode.kind {
+            let parent_file = self.files.get_mut(&parent_file.inode).ok_or("invalid file descriptor")?;
+            let index = parent_file.dirents.iter().position(|x| x.name == name).ok_or("file not found")?;
+            let file_entry = parent_file.dirents.remove(index);
+            self.files.remove(&file_entry.inode);
+            Ok(())
+        } else {
+            Err("not a directory")
+        }
+    }
+
 
     pub fn rename(&mut self, old_path: &PathBuf, new_path: &PathBuf) -> Result<(), &'static str> {
-        let inode = self.lookup_inode(old_path).ok_or("file not found")?;
+    let inode = self.lookup_inode(old_path).ok_or("file not found")?;
 
-        let file = self.files.get_mut(&inode).ok_or("file not found")?;
-        file.path = new_path.clone();
+    let file = self.files.get_mut(&inode).ok_or("file not found")?;
 
-        Ok(())
-    }
-
-    // --------------------
-    // Directory Operations
-    // --------------------
-
-
-
-    pub fn mkdir(&mut self, path: &PathBuf) -> Result<(), &'static str> {
-        if self.files.values().any(|file| file.path == *path) {
-            return Err("File or directory already exists");
-        }
-
-        // Create new directory inode
-        let inode = Inode::new(
-            self.next_inode_number.into(),
-            0,
-            Permissions::from(0o755), // typical perms for a directory
-            0,
-            0,
-            0,
-            0,
-            0,
-            InodeKind::Directory
-        );
-
-        let file = File {
-            inode: inode.clone(),
-            data: Vec::new(), // bc no actual data in a directory
-            path: path.clone(),
-            position: 0,
-        };
-
-        self.files.insert(inode.clone(), file);
-        self.next_inode_number += 1;
-
-        // Add new directory to its parent's children
-        if let Some(parent_path) = path.parent() {
-            if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
-                if let Some(parent_file) = self.files.get_mut(&parent_inode) {
-                    if let InodeKind::Directory = &mut parent_file.inode.kind {
-                        let dir_entry = DirectoryEntry { name: path.file_name().unwrap().to_str().unwrap().to_string(), inode: inode.clone() };
-                        parent_file.inode.children.push(dir_entry);
+    // Update the DirectoryEntry in the parent directory
+    if let Some(parent_path) = old_path.parent() {
+        if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
+            if let Some(parent_file) = self.files.get_mut(&parent_inode) {
+                if let InodeKind::Directory = parent_file.inode.kind {
+                    if let Some(entry) = parent_file.dirents.iter_mut().find(|entry| entry.inode == inode) {
+                        entry.name = new_path.file_name().unwrap().to_str().unwrap().to_string();
                     }
                 }
             }
         }
-
-        Ok(())
     }
-    pub fn rmdir(&mut self, path: &PathBuf) -> Result<(), &'static str> {
-        let inode = self.lookup_inode(path).ok_or("directory not found")?;
 
-        let file = self.files.get(&inode).ok_or("directory not found")?;
-        if let InodeKind::Directory = &file.inode.kind {
-            if !file.inode.children.is_empty() {
-                return Err("Directory is not empty");
-            }
-        } else {
-            return Err("Not a directory");
-        }
+    Ok(())
+}
 
-        self.files.remove(&inode);
-
-        // Remove the directory from its parent's children
-        if let Some(parent_path) = path.parent() {
-            if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
-                if let Some(parent_file) = self.files.get_mut(&parent_inode) {
-                    if let InodeKind::Directory = &mut parent_file.inode.kind {
-                        parent_file.inode.children.retain(|dir_entry| dir_entry.inode != inode);
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
 
     pub fn opendir(&mut self, path: &PathBuf) -> Result<DirectoryDescriptor, &'static str> {
         let inode = self.lookup_inode(path).ok_or("directory not found")?;
