@@ -529,6 +529,19 @@ impl FileSystem {
         // a possible way: self.current_directory.to_str().ok_or("Non-Unicode path").map(|s| s.to_string())
     }
 
+      pub fn chdir(&mut self, path: &PathBuf) -> Result<(), &'static str> {
+        // Check if the path exists and is a directory
+        let inode = self.lookup_inode(path).ok_or("directory not found")?;
+        let file = self.files.get(&inode).ok_or("directory not found")?;
+        match file.inode.kind {
+            InodeKind::Directory => {
+                self.current_directory = path.clone();
+                Ok(())
+            },
+            _ => Err("not a directory"),
+        }
+    }
+
     pub fn mkdir(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
         let parent_file = self.get_file(parent_fd)?;
         if let InodeKind::Directory = parent_file.inode.kind {

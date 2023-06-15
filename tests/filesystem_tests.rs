@@ -149,6 +149,48 @@ mod tests {
         assert_eq!(fs.getcwd(), Ok("/home/user".to_string()));
     }
 
+     #[test]
+    fn test_chdir() {
+        let mut fs = FileSystem::new();
+
+        // Create a directory
+        let dir_path = PathBuf::from("/test_dir");
+        fs.mkdir(&dir_path).unwrap();
+
+        // Change to the new directory
+        fs.chdir(&dir_path).unwrap();
+
+        // Check that the current directory has been updated
+        assert_eq!(fs.getcwd().unwrap(), dir_path);
+    }
+
+    #[test]
+    fn test_chdir_nonexistent() {
+        let mut fs = FileSystem::new();
+
+        // Try to change to a nonexistent directory
+        let dir_path = PathBuf::from("/nonexistent_dir");
+        assert!(fs.chdir(&dir_path).is_err());
+
+        // Check that the current directory has not been updated
+        assert_eq!(fs.getcwd().unwrap(), PathBuf::from("/"));
+    }
+
+    #[test]
+    fn test_chdir_not_a_directory() {
+        let mut fs = FileSystem::new();
+
+        // Create a file
+        let file_path = PathBuf::from("/test_file");
+        fs.create_file(vec![], &file_path).unwrap();
+
+        // Try to change to the file
+        assert!(fs.chdir(&file_path).is_err());
+
+        // Check that the current directory has not been updated
+        assert_eq!(fs.getcwd().unwrap(), PathBuf::from("/"));
+    }
+
     #[test]
     fn test_create_file() {
         let mut fs = FileSystem::new();
