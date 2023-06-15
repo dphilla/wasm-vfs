@@ -235,11 +235,28 @@ impl FileSystem {
         Ok(&open_file.file.inode)
     }
 
-    // change to look up inode from fd
     fn get_file(&self, fd: FileDescriptor) -> Result<File, &'static str> {
         let inode = Inode { number: fd as u64, ..Default::default() };
         self.files.get(&inode).ok_or("invalid file descriptor")
             .map(|file| file.clone()) // need to clone?
+    }
+
+    fn construct_full_path(&self, dir_inode: &Inode, path: &PathBuf) -> Result<PathBuf, &'static str> {
+        let dir_entry = self.get_directory_entry(dir_inode.number)?;
+        let mut full_path = dir_entry.name.clone();
+        let combined_full_path = full_path + &path.clone().into_os_string().into_string().unwrap();
+        Ok(PathBuf::from(combined_full_path))
+    }
+
+    fn get_directory_entry(&self, inode_number: u64) -> Result<DirectoryEntry, &'static str> {
+        for file in self.files.values() {
+            for dirent in &file.dirents {
+                if dirent.inode.number == inode_number {
+                    return Ok(dirent.clone());
+                }
+            }
+        }
+        Err("inode not found")
     }
 
     pub fn create_file(&mut self, raw_data: Vec<u8>, path: &PathBuf) -> Inode {
@@ -491,6 +508,16 @@ impl FileSystem {
             st_mtime: file.inode.mtime as i64,
             st_ctime: file.inode.ctime as i64,
         })
+    }
+
+     pub fn fstatat(&mut self, dir_fd: FileDescriptor, path: &PathBuf) -> Result<Stat, &'static str> {
+        let dir_inode = self.get_inode(dir_fd)?;
+        if let InodeKind::Directory = dir_inode.kind {
+            let full_path = self.construct_full_path(dir_inode, path)?;
+            self.stat(&full_path)
+        } else {
+            Err("not a directory")
+        }
     }
 
 

@@ -118,6 +118,26 @@ mod tests {
     }
 
     #[test]
+    fn test_fstatat() {
+        let mut fs = FileSystem::new();
+
+        // Create a file
+        let file_path = PathBuf::from("/test_dir/test_file");
+        let file_inode = fs.create_file(vec![1, 2, 3, 4, 5], &file_path);
+
+        // Open the parent directory
+        let dir_path = PathBuf::from("/test_dir");
+        let dir_fd = fs.open(&dir_path).unwrap();
+
+        // Call fstatat on the file
+        let file_stat = fs.fstatat(dir_fd, &PathBuf::from("test_file"), false).unwrap();
+
+        // Check the results
+        assert_eq!(file_stat.st_ino, file_inode.number);
+        assert_eq!(file_stat.st_size, 5);
+    }
+
+    #[test]
     fn test_create_file() {
         let mut fs = FileSystem::new();
         let file_data = vec![1, 2, 3, 4, 5];
