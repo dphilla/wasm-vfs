@@ -90,19 +90,19 @@ impl From<u16> for Permissions {
 }
 
 pub struct Stat {
-    pub st_dev: u64,        // ID of device containing file
+    pub st_dev: u64,        // ID of device containing file, dummy field for now
     pub st_ino: u64,        // inode number
     pub st_mode: u16,       // protection
     pub st_nlink: u16,      // number of hard links
     pub st_uid: u32,        // user ID of owner
     pub st_gid: u32,        // group ID of owner
-    pub st_rdev: u64,       // device ID (if special file)
+    pub st_rdev: u64,       // device ID (if special file), dummy field for now
     pub st_size: i64,       // total size, in bytes
     pub st_blksize: i32,    // blocksize for file system I/O
-    pub st_blocks: i64,     // number of 512B blocks allocated
-    pub st_atime: i64,      // time of last access
-    pub st_mtime: i64,      // time of last modification
-    pub st_ctime: i64,      // time of last status change
+    pub st_blocks: i64,     // number of 512B blocks allocated, dummy field for now
+    pub st_atime: i64,      // time of last access, dummy field for now
+    pub st_mtime: i64,      // time of last modification, dummy field for now
+    pub st_ctime: i64,      // time of last status change, dummy field for now
 }
 
 pub type FileDescriptor = i32;
@@ -429,16 +429,16 @@ impl FileSystem {
         let file = self.get_file(fd)?;
         let inode = &file.inode;
         Ok(Stat {
-            st_dev: 0, // This is a virtual file system, so device ID doesn't really apply
+            st_dev: 0,
             st_ino: inode.number,
-            st_mode: 0, // You'll need to convert permissions to a mode
-            st_nlink: 1, // Hard links aren't supported in this example
+            st_mode: 0,
+            st_nlink: 1,
             st_uid: inode.user_id,
             st_gid: inode.group_id,
-            st_rdev: 0, // Device ID doesn't apply for regular files
+            st_rdev: 0,
             st_size: inode.size as i64,
-            st_blksize: 0, // This is a virtual file system, so block size doesn't really apply
-            st_blocks: 0, // This is a virtual file system, so number of blocks doesn't really apply
+            st_blksize: 0,
+            st_blocks: 0,
             st_atime: inode.atime as i64,
             st_mtime: inode.mtime as i64,
             st_ctime: inode.ctime as i64,
@@ -450,21 +450,49 @@ impl FileSystem {
         let file = self.files.get(&inode).ok_or("file not found")?;
         let inode = &file.inode;
         Ok(Stat {
-            st_dev: 0, // This is a virtual file system, so device ID doesn't really apply
+            st_dev: 0,
             st_ino: inode.number,
-            st_mode: 0, // You'll need to convert permissions to a mode
-            st_nlink: 1, // Hard links aren't supported in this example
+            st_mode: 0,
+            st_nlink: 1,
             st_uid: inode.user_id,
             st_gid: inode.group_id,
-            st_rdev: 0, // Device ID doesn't apply for regular files
+            st_rdev: 0,
             st_size: inode.size as i64,
-            st_blksize: 0, // This is a virtual file system, so block size doesn't really apply
-            st_blocks: 0, // This is a virtual file system, so number of blocks doesn't really apply
+            st_blksize: 0,
+            st_blocks: 0,
             st_atime: inode.atime as i64,
             st_mtime: inode.mtime as i64,
             st_ctime: inode.ctime as i64,
         })
     }
+
+    pub fn lstat(&mut self, path: &PathBuf) -> Result<Stat, &'static str> {
+        let inode = self.lookup_inode(path).ok_or("file not found")?;
+        let file = self.files.get(&inode).ok_or("file not found")?;
+
+        let st_mode = match file.inode.kind {
+            InodeKind::File => 0o100000, // regular file
+            InodeKind::Directory => 0o040000, // directory
+            InodeKind::SymbolicLink(_) => 0o120000, // symbolic link
+        };
+
+        Ok(Stat {
+            st_dev: 0,
+            st_ino: file.inode.number,
+            st_mode: st_mode,
+            st_nlink: 1,
+            st_uid: file.inode.user_id,
+            st_gid: file.inode.group_id,
+            st_rdev: 0,
+            st_size: file.inode.size as i64,
+            st_blksize: 512,
+            st_blocks: 0,
+            st_atime: file.inode.atime as i64,
+            st_mtime: file.inode.mtime as i64,
+            st_ctime: file.inode.ctime as i64,
+        })
+    }
+
 
     pub fn mkdir(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
         let parent_file = self.get_file(parent_fd)?;
@@ -505,27 +533,26 @@ impl FileSystem {
         }
     }
 
-
     pub fn rename(&mut self, old_path: &PathBuf, new_path: &PathBuf) -> Result<(), &'static str> {
-    let inode = self.lookup_inode(old_path).ok_or("file not found")?;
+        let inode = self.lookup_inode(old_path).ok_or("file not found")?;
 
-    let file = self.files.get_mut(&inode).ok_or("file not found")?;
+        let file = self.files.get_mut(&inode).ok_or("file not found")?;
 
-    // Update the DirectoryEntry in the parent directory
-    if let Some(parent_path) = old_path.parent() {
-        if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
-            if let Some(parent_file) = self.files.get_mut(&parent_inode) {
-                if let InodeKind::Directory = parent_file.inode.kind {
-                    if let Some(entry) = parent_file.dirents.iter_mut().find(|entry| entry.inode == inode) {
-                        entry.name = new_path.file_name().unwrap().to_str().unwrap().to_string();
+        // Update the DirectoryEntry in the parent directory
+        if let Some(parent_path) = old_path.parent() {
+            if let Some(parent_inode) = self.lookup_inode(&parent_path.into()) {
+                if let Some(parent_file) = self.files.get_mut(&parent_inode) {
+                    if let InodeKind::Directory = parent_file.inode.kind {
+                        if let Some(entry) = parent_file.dirents.iter_mut().find(|entry| entry.inode == inode) {
+                            entry.name = new_path.file_name().unwrap().to_str().unwrap().to_string();
+                        }
                     }
                 }
             }
         }
-    }
 
-    Ok(())
-}
+        Ok(())
+    }
 
 
     pub fn opendir(&mut self, path: &PathBuf) -> Result<DirectoryDescriptor, &'static str> {
