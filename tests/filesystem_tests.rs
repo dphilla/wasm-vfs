@@ -104,6 +104,19 @@ mod tests {
         assert_eq!(stat.st_ino, inode.number);
     }
 
+     #[test]
+    fn test_lstat() {
+        let mut fs = FileSystem::new();
+        let path = PathBuf::from("/testfile");
+        let permissions = Permissions::from(0o644);
+        let inode = fs.create_file(vec![1, 2, 3, 4, 5], &path, permissions, InodeKind::File);
+
+        let stat = fs.lstat(&path).unwrap();
+
+        assert_eq!(stat.st_ino, inode.number);
+        assert_eq!(stat.st_mode, 0o100000); // regular file
+    }
+
     #[test]
     fn test_create_file() {
         let mut fs = FileSystem::new();
