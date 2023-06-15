@@ -138,6 +138,18 @@ mod tests {
     }
 
     #[test]
+    fn test_getcwd() {
+        let mut fs = FileSystem::new();
+
+        // The initial working directory should be root.
+        assert_eq!(fs.getcwd(), Ok("/".to_string()));
+
+        // Change the working directory and check again.
+        fs.current_directory = PathBuf::from("/home/user");
+        assert_eq!(fs.getcwd(), Ok("/home/user".to_string()));
+    }
+
+    #[test]
     fn test_create_file() {
         let mut fs = FileSystem::new();
         let file_data = vec![1, 2, 3, 4, 5];

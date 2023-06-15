@@ -191,6 +191,7 @@ pub struct FileSystem {
     pub next_fd: FileDescriptor,
     pub next_directory_descriptor: DirectoryDescriptor,
     pub open_directories: HashMap<DirectoryDescriptor, OpenDirectory>,
+    pub current_directory: PathBuf,
     pub root_inode: Inode
 }
 
@@ -208,6 +209,7 @@ impl FileSystem {
             next_fd: 1,
             next_directory_descriptor: 1,
             open_directories:   HashMap::new(),
+            current_directory: PathBuf::from("/"),
             root_inode: inode.clone(),
         };
 
@@ -520,6 +522,12 @@ impl FileSystem {
         }
     }
 
+    pub fn getcwd(&self) -> PathBuf {
+        self.current_directory.clone()
+
+        // note: on libc level, will need to figure out how to handle non-unnnicode chars if returning a string
+        // a possible way: self.current_directory.to_str().ok_or("Non-Unicode path").map(|s| s.to_string())
+    }
 
     pub fn mkdir(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
         let parent_file = self.get_file(parent_fd)?;
