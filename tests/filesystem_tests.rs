@@ -192,6 +192,30 @@ mod tests {
     }
 
     #[test]
+    fn test_fchdir() {
+        let mut fs = FileSystem::new();
+
+        // Create a directory
+        let dir_path = PathBuf::from("/dir");
+        let dir_inode = fs.mkdir(&dir_path).unwrap();
+
+        // Open the directory
+        let dir_fd = fs.open(&dir_path).unwrap();
+
+        // Change the current directory to the directory
+        fs.fchdir(dir_fd).unwrap();
+
+        // Check that the current directory has been changed
+        assert_eq!(fs.getcwd().unwrap(), "/dir");
+
+        // Try to change the current directory to a file
+        let file_path = PathBuf::from("/dir/file");
+        fs.create_file(Vec::new(), &file_path).unwrap();
+        let file_fd = fs.open(&file_path).unwrap();
+        assert_eq!(fs.fchdir(file_fd), Err("not a directory"));
+    }
+
+    #[test]
     fn test_create_file() {
         let mut fs = FileSystem::new();
         let file_data = vec![1, 2, 3, 4, 5];

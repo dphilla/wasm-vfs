@@ -542,6 +542,19 @@ impl FileSystem {
         }
     }
 
+    pub fn fchdir(&mut self, fd: FileDescriptor) -> Result<(), &'static str> {
+        let open_file = self.open_files.get(&fd).ok_or("invalid file descriptor")?;
+        let inode = &open_file.file.inode;
+
+        match inode.kind {
+            InodeKind::Directory => {
+                self.current_directory = inode.number;
+                Ok(())
+            }
+            _ => Err("not a directory"),
+        }
+    }
+
     pub fn mkdir(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
         let parent_file = self.get_file(parent_fd)?;
         if let InodeKind::Directory = parent_file.inode.kind {
