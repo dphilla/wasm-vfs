@@ -22,8 +22,6 @@ pub struct DirectoryEntry {
     file_type: String,
 }
 
-
-
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Default)]
 pub struct Inode {
     pub number: u64,
@@ -553,6 +551,15 @@ impl FileSystem {
             }
             _ => Err("not a directory"),
         }
+    }
+
+
+    pub fn getdents(&self, fd: DirectoryDescriptor, dirp: &mut [u8]) -> Result<usize, &'static str> {
+         unimplemented!();
+    }
+
+    pub fn getdents64(&self, fd: DirectoryDescriptor, dirp: &mut [u8]) -> Result<usize, &'static str> {
+         unimplemented!();
     }
 
     pub fn mkdir(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
