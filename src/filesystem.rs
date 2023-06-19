@@ -15,8 +15,8 @@ pub struct DirectoryEntry {
     name: String,
     inode: Inode,
 
-    // info below is more typical to flat-file
-    // impl of dirents may be used in future
+    // recs below are  more typical to flat-file
+    // impl of dirents, may be used in future
     offset: i64,
     record_length: usize,
     file_type: String,
@@ -542,24 +542,29 @@ impl FileSystem {
 
     pub fn fchdir(&mut self, fd: FileDescriptor) -> Result<(), &'static str> {
         let open_file = self.open_files.get(&fd).ok_or("invalid file descriptor")?;
-        let inode = &open_file.file.inode;
+        let file = &open_file.file;
 
-        match inode.kind {
+        match file.inode.kind {
             InodeKind::Directory => {
-                self.current_directory = inode.number;
+                self.current_directory = Self::construct_path(file);
                 Ok(())
             }
             _ => Err("not a directory"),
         }
     }
 
+    pub fn construct_path(file: &File) -> PathBuf {
+        let mut path = PathBuf::new();
+        for dirent in &file.dirents {
+            path.push(&dirent.name);
+        }
+        path
+    }
 
     pub fn getdents(&self, fd: DirectoryDescriptor, dirp: &mut [u8]) -> Result<usize, &'static str> {
-         unimplemented!();
     }
 
     pub fn getdents64(&self, fd: DirectoryDescriptor, dirp: &mut [u8]) -> Result<usize, &'static str> {
-         unimplemented!();
     }
 
     pub fn mkdir(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
