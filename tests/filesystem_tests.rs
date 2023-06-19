@@ -216,6 +216,33 @@ mod tests {
     }
 
     #[test]
+    fn test_getdents() {
+        let mut fs = Filesystem::new();
+
+        // Create a directory
+        let dir_path = PathBuf::from("/test_dir");
+        fs.mkdir(&dir_path).unwrap();
+
+        // Open the directory
+        let dir_fd = fs.opendir(&dir_path).unwrap();
+
+        // Create a file in the directory
+        let file_path = dir_path.join("test_file");
+        fs.creat(&file_path).unwrap();
+
+        // Get directory entries
+        let mut buf = vec![0; 1024];
+        let bytes_read = fs.getdents(dir_fd, &mut buf).unwrap();
+
+        // Check that bytes_read is not 0 (since we have at least one entry in the directory)
+        assert!(bytes_read > 0);
+
+        // Check that the first entry is our file
+        let entry: DirectoryEntry = unsafe { std::ptr::read(buf.as_ptr() as *const _) };
+        assert_eq!(entry.name, "test_file");
+    }
+
+    #[test]
     fn test_create_file() {
         let mut fs = FileSystem::new();
         let file_data = vec![1, 2, 3, 4, 5];
