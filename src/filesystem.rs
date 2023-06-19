@@ -1,8 +1,11 @@
 use std::collections::HashMap; use std::io::{Read, Write};
 use std::path::PathBuf;
+use serde::{Serialize, Deserialize};
+use bincode;
 
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize)]
 pub enum InodeKind {
     #[default]
     File,
@@ -10,7 +13,7 @@ pub enum InodeKind {
     SymbolicLink(PathBuf),
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
 pub struct DirectoryEntry {
     name: String,
     inode: Inode,
@@ -22,7 +25,7 @@ pub struct DirectoryEntry {
     file_type: String,
 }
 
-#[derive(Eq, Hash, PartialEq, Debug, Clone, Default)]
+#[derive(Eq, Hash, PartialEq, Debug, Clone, Default, Serialize)]
 pub struct Inode {
     pub number: u64,
     pub size: u64,
@@ -51,14 +54,14 @@ impl Inode {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Clone, Hash, Eq)]
+#[derive(Debug, Default, PartialEq, Clone, Hash, Eq, Serialize )]
 pub struct Permissions {
     owner: Permission,
     group: Permission,
     other: Permission,
 }
 
-#[derive(Debug, Default, PartialEq, Clone, Hash, Eq)]
+#[derive(Debug, Default, PartialEq, Clone, Hash, Eq, Serialize)]
 pub struct Permission {
     read: bool,
     write: bool,
@@ -298,6 +301,10 @@ impl FileSystem {
         }
 
         Some(current_inode)
+    }
+
+    pub fn lookup_file_from_inode(&self, inode: &Inode) -> Result<&File, &'static str> {
+        self.files.get(inode).ok_or("No file with the given inode exists")
     }
 
     // *** "Syscalls" ***
@@ -562,9 +569,25 @@ impl FileSystem {
     }
 
     pub fn getdents(&self, fd: DirectoryDescriptor, dirp: &mut [u8]) -> Result<usize, &'static str> {
+        let open_dir = self.open_directories.get(&fd).ok_or("invalid directory descriptor");
+
+        let inode = &open_dir.unwrap().directory;
+        let file = self.lookup_file_from_inode(inode);
+        let entries = &file?.dirents;
+        let bytes_to_read = std::cmp::min(dirp.len(), entries.len() - open_dir?.position);
+        let slice = &entries[open_dir?.position..open_dir?.position + bytes_to_read];
+        let bytes = bincode::serialize(slice).unwrap();
+        dirp[..bytes_to_read].clone_from_slice(&bytes);
+
+        //open_dir?.position += bytes_to_read;
+
+        Ok(bytes_to_read * std::mem::size_of::<DirectoryEntry>())
+
     }
 
     pub fn getdents64(&self, fd: DirectoryDescriptor, dirp: &mut [u8]) -> Result<usize, &'static str> {
+        // for the purpose of this vfs, these behave the same
+        self.getdents(fd, dirp)
     }
 
     pub fn mkdir(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
