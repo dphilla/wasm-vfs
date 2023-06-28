@@ -39,7 +39,7 @@ pub struct Inode {
 }
 
 impl Inode {
-    fn new(number: u64, size: u64, permissions: Permissions, user_id: u32, group_id: u32, ctime: u64, mtime: u64, atime: u64, kind: InodeKind) -> Self {
+    pub fn new(number: u64, size: u64, permissions: Permissions, user_id: u32, group_id: u32, ctime: u64, mtime: u64, atime: u64, kind: InodeKind) -> Self {
         Inode {
             number,
             size,
@@ -590,31 +590,72 @@ impl FileSystem {
         self.getdents(fd, dirp)
     }
 
-    pub fn mkdir(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
-        let parent_file = self.get_file(parent_fd)?;
-        if let InodeKind::Directory = parent_file.inode.kind {
-            let new_dir_inode = self.create_directory();
-            let new_dir_entry = DirectoryEntry { inode: new_dir_inode.clone(), offset: 0 as i64, record_length: 0, file_type: "dir".to_string(), name: name.to_string() };
-            let parent_file = self.files.get_mut(&parent_file.inode).ok_or("invalid file descriptor")?;
-            parent_file.dirents.push(new_dir_entry);
-            Ok(())
-        } else {
-            Err("not a directory")
+    pub fn mkdir(&mut self, path: &mut PathBuf) -> Result<(), &'static str> {
+        path.pop();
+        let parent_inode = self.lookup_inode(path).ok_or("parent directory not found")?;
+        let parent_file = self.lookup_file_from_inode(&parent_inode)?;
+
+        match parent_file.inode.kind {
+            InodeKind::Directory => {
+                let new_inode = Inode::new(
+                    self.next_inode_number,
+                    0,
+                    Permissions::from(0o755),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    InodeKind::Directory,
+                );
+                let mut new_parent_file = parent_file.clone();
+
+                let new_directory_entry = DirectoryEntry {
+                    name: path.file_name().unwrap().to_string_lossy().into_owned(),
+                    inode: new_inode.clone(),
+                    offset: 0,
+                    record_length: 0,
+                    file_type: "directory".to_string(),
+                };
+
+                new_parent_file.dirents.push(new_directory_entry);
+                self.files.insert(parent_inode, new_parent_file);
+
+                Ok(())
+            }
+            _ => Err("not a directory"),
         }
     }
 
-    pub fn rmdir(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
-        let parent_file = self.get_file(parent_fd)?;
-        if let InodeKind::Directory = parent_file.inode.kind {
-            let parent_file = self.files.get_mut(&parent_file.inode).ok_or("invalid file descriptor")?;
-            let index = parent_file.dirents.iter().position(|x| x.name == name).ok_or("directory not found")?;
-            let dir_entry = parent_file.dirents.remove(index);
-            self.files.remove(&dir_entry.inode);
-            Ok(())
-        } else {
-            Err("not a directory")
+
+    pub fn rmdir(&mut self, path: &mut PathBuf) -> Result<(), &'static str> {
+        let inode_to_remove = self.lookup_inode(path).ok_or("directory not found")?;
+        let file_to_remove = self.lookup_file_from_inode(&inode_to_remove)?;
+
+        match file_to_remove.inode.kind {
+            InodeKind::Directory => {
+                if !file_to_remove.dirents.is_empty() {
+                    return Err("directory not empty");
+                }
+
+                path.pop();
+                let parent_inode = self.lookup_inode(path).ok_or("parent directory not found")?;
+                let parent_file = self.lookup_file_from_inode(&parent_inode)?;
+
+                match parent_file.inode.kind {
+                    InodeKind::Directory => {
+                        let mut new_parent_file = parent_file.clone();
+                        new_parent_file.dirents.retain(|dirent| dirent.inode.number != inode_to_remove.number);
+                        self.files.insert(parent_inode, new_parent_file);
+                        Ok(())
+                    }
+                    _ => Err("not a directory"),
+                }
+            }
+            _ => Err("not a directory"),
         }
     }
+
 
     pub fn unlink(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
         let parent_file = self.get_file(parent_fd)?;
