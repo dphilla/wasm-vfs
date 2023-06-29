@@ -15,8 +15,8 @@ pub enum InodeKind {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
 pub struct DirectoryEntry {
-    name: String,
-    inode: Inode,
+    pub name: String,
+    pub inode: Inode,
 
     // recs below are  more typical to flat-file
     // impl of dirents, may be used in future
@@ -129,34 +129,7 @@ pub struct OpenDirectory {
     pub position: usize,
 }
 
-impl Read for OpenFile {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let file_data = &self.file.data;
-        let bytes_to_read = std::cmp::min(buf.len(), file_data.len() - self.position as usize);
-        buf[..bytes_to_read].copy_from_slice(&file_data[self.position as usize..(self.position + bytes_to_read as u64) as usize]);
-        self.position += bytes_to_read as u64;
-        Ok(bytes_to_read)
-    }
-}
-
-impl Write for OpenFile {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let file_data = &mut self.file.data;
-        let new_size = std::cmp::max(file_data.len(), self.position as usize + buf.len());
-        file_data.resize(new_size, 0);
-        file_data[self.position as usize..self.position as usize + buf.len()]
-            .copy_from_slice(buf);
-        self.position += buf.len() as u64;
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 impl OpenFile {
-
     pub fn lseek(&mut self, pos: i64, whence: i32) -> Result<u64, &'static str> {
         let file_data = &mut self.file.data;
         let file_len = file_data.len() as i64;
@@ -178,6 +151,28 @@ impl OpenFile {
         self.position = new_pos as u64;
 
         Ok(self.position)
+    }
+
+    pub fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let file_data = &mut self.file.data;
+        let new_size = std::cmp::max(file_data.len(), self.position as usize + buf.len());
+        file_data.resize(new_size, 0);
+        file_data[self.position as usize..self.position as usize + buf.len()]
+            .copy_from_slice(buf);
+        self.position += buf.len() as u64;
+        Ok(buf.len())
+    }
+
+    pub fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    pub fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let file_data = &self.file.data;
+        let bytes_to_read = std::cmp::min(buf.len(), file_data.len() - self.position as usize);
+        buf[..bytes_to_read].copy_from_slice(&file_data[self.position as usize..(self.position + bytes_to_read as u64) as usize]);
+        self.position += bytes_to_read as u64;
+        Ok(bytes_to_read)
     }
 
 }
@@ -344,27 +339,24 @@ impl FileSystem {
         Ok(fd)
     }
 
-    pub fn openat(&mut self, dir_fd: FileDescriptor, path: &PathBuf, create: bool) -> Result<FileDescriptor, &'static str> {
+    pub fn openat(&mut self, dir_fd: FileDescriptor, path: &PathBuf) -> Result<FileDescriptor, &'static str> {
         let dir_file = self.get_file(dir_fd)?;
         let full_path = path;
-        if create {
-            self.creat(&full_path)
-        } else {
-            let entry = dir_file.dirents.iter().find(|entry| entry.name == path.to_str().unwrap());
-            match entry {
-                Some(entry) => {
-                    let file = self.files.get(&entry.inode).ok_or("file not found")?;
-                    let open_file = OpenFile {
-                        file: file.clone(),
-                        position: 0,
-                    };
-                    let fd = self.next_fd;
-                    self.next_fd += 1;
-                    self.open_files.insert(fd, open_file);
-                    Ok(fd)
-                },
-                None => Err("file not found"),
-            }
+
+        let entry = dir_file.dirents.iter().find(|entry| entry.name == path.to_str().unwrap());
+        match entry {
+            Some(entry) => {
+                let file = self.files.get(&entry.inode).ok_or("file not found")?;
+                let open_file = OpenFile {
+                    file: file.clone(),
+                    position: 0,
+                };
+                let fd = self.next_fd;
+                self.next_fd += 1;
+                self.open_files.insert(fd, open_file);
+                Ok(fd)
+            },
+            None => Err("file not found"),
         }
     }
 
@@ -656,17 +648,27 @@ impl FileSystem {
         }
     }
 
+    pub fn unlink(&mut self, path: &mut PathBuf) -> Result<(), &'static str> {
+        let inode_to_remove = self.lookup_inode(path).ok_or("file not found")?;
+        let file_to_remove = self.lookup_file_from_inode(&inode_to_remove)?;
 
-    pub fn unlink(&mut self, parent_fd: FileDescriptor, name: &str) -> Result<(), &'static str> {
-        let parent_file = self.get_file(parent_fd)?;
-        if let InodeKind::Directory = parent_file.inode.kind {
-            let parent_file = self.files.get_mut(&parent_file.inode).ok_or("invalid file descriptor")?;
-            let index = parent_file.dirents.iter().position(|x| x.name == name).ok_or("file not found")?;
-            let file_entry = parent_file.dirents.remove(index);
-            self.files.remove(&file_entry.inode);
-            Ok(())
-        } else {
-            Err("not a directory")
+        match file_to_remove.inode.kind {
+            InodeKind::File | InodeKind::SymbolicLink(_) => {
+                path.pop();
+                let parent_inode = self.lookup_inode(path).ok_or("parent directory not found")?;
+                let parent_file = self.lookup_file_from_inode(&parent_inode)?;
+
+                match parent_file.inode.kind {
+                    InodeKind::Directory => {
+                        let mut new_parent_file = parent_file.clone();
+                        new_parent_file.dirents.retain(|dirent| dirent.inode.number != inode_to_remove.number);
+                        self.files.insert(parent_inode, new_parent_file);
+                        Ok(())
+                    }
+                    _ => Err("not a directory"),
+                }
+            }
+            _ => Err("not a file or symbolic link"),
         }
     }
 
