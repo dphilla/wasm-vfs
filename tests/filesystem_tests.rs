@@ -1,21 +1,23 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use wasm_vfs::{FileSystem, File, InodeKind, Inode, OpenFile, Permissions, DirectoryEntry};
     use std::path::PathBuf;
+    use std::path::Path;
+
 
     //OpenFile tests
     //-------------
 
-     fn read_returns_data_from_file() {
+    fn read_returns_data_from_file() {
         let data = vec![0, 1, 2, 3, 4, 5];
         let file = File {
-            inode: Inode::new(1, data.len() as u64, Permissions::default(), 0, 0, 0, 0, 0),
-            data: Mutex::new(data.clone()),
+            inode: Inode::new(1, data.len() as u64, Permissions::default(), 0, 0, 0, 0, 0, InodeKind::File),
+            data: data.clone(),
             position: 0,
-            path: PathBuf::new(),
+            dirents: vec![],
         };
-        let open_file = OpenFile {
-            file: Arc::new(file),
+        let mut open_file = OpenFile {
+            file: file,
             position: 0,
         };
         let mut buf = [0u8; 3];
@@ -28,40 +30,53 @@ mod tests {
     fn write_appends_data_to_file() {
         let data = vec![0, 1, 2];
         let file = File {
-            inode: Inode::new(1, data.len() as u64, Permissions::default(), 0, 0, 0, 0, 0),
-            data: Mutex::new(data.clone()),
+            inode: Inode::new(1, data.len() as u64, Permissions::default(), 0, 0, 0, 0, 0, InodeKind::File),
+            data: data.clone(),
             position: 0,
-            path: PathBuf::new(),
+            dirents: vec![],
         };
-        let open_file = OpenFile {
-            file: Arc::new(file),
+        let mut open_file = OpenFile {
+            file: file,
             position: 3,
         };
         let bytes_written = open_file.write(&[3, 4, 5]).unwrap();
         assert_eq!(bytes_written, 3);
-        let file_data = open_file.file.data.lock().unwrap();
+        let file_data = open_file.file.data;
         assert_eq!(*file_data, vec![0, 1, 2, 3, 4, 5]);
     }
 
     #[test]
-    fn lseek_sets_file_position() {
-        let data = vec![0, 1, 2, 3, 4, 5];
-        let file = File {
-            inode: Inode::new(1, data.len() as u64, Permissions::default(), 0, 0, 0, 0, 0),
-            data: Mutex::new(data.clone()),
+    fn test_lseek() {
+        let inode = Inode::new(1, 10, Permissions::from(0o755), 0, 0, 0, 0, 0, InodeKind::File);
+        let mut file = File {
+            inode,
+            data: vec![0; 10],
             position: 0,
-            path: PathBuf::new(),
+            dirents: vec![],
         };
-        let open_file = OpenFile {
-            file: Arc::new(file),
+        let mut open_file = OpenFile {
+            file,
             position: 0,
         };
-        let new_pos = open_file.lseek(3, 0).unwrap();
-        assert_eq!(new_pos, 3);
-        let mut buf = [0u8; 3];
-        let bytes_read = open_file.read(&mut buf).unwrap();
-        assert_eq!(bytes_read, 3);
-        assert_eq!(buf, [3, 4, 5]);
+
+        // Test SEEK_SET
+        assert_eq!(open_file.lseek(5, 0).unwrap(), 5);
+        assert_eq!(open_file.position, 5);
+
+        // Test SEEK_CUR
+        assert_eq!(open_file.lseek(2, 1).unwrap(), 7);
+        assert_eq!(open_file.position, 7);
+
+        // Test SEEK_END
+        assert_eq!(open_file.lseek(-2, 2).unwrap(), 8);
+        assert_eq!(open_file.position, 8);
+
+        // Test invalid whence
+        assert!(open_file.lseek(0, 3).is_err());
+
+        // Test invalid position
+        assert!(open_file.lseek(20, 0).is_err());
+        assert!(open_file.lseek(-20, 0).is_err());
     }
 
 
@@ -85,23 +100,23 @@ mod tests {
     fn test_filesystem_fstat() {
         let mut fs = FileSystem::new();
         let path = PathBuf::from("/test/file");
-        let inode = fs.lookup_inode(&path).unwrap();
+        let mut inode = fs.lookup_inode(&path);
 
-        let fd = inode.number as i32;
-        let stat = fs.fstat(fd).unwrap();
+        let fd = inode.clone().unwrap().number as i32;
+        let stat = fs.fstat(fd.clone()).unwrap();
 
-        assert_eq!(stat.st_ino, inode.number);
+        assert_eq!(stat.st_ino, inode.unwrap().number);
     }
 
     #[test]
     fn test_filesystem_stat() {
         let mut fs = FileSystem::new();
         let path = PathBuf::from("/test/file");
-        let inode = fs.lookup_inode(&path).unwrap();
+        let inode = fs.lookup_inode(&path);
 
         let stat = fs.stat(&path).unwrap();
 
-        assert_eq!(stat.st_ino, inode.number);
+        assert_eq!(stat.st_ino, inode.unwrap().number);
     }
 
      #[test]
@@ -109,7 +124,7 @@ mod tests {
         let mut fs = FileSystem::new();
         let path = PathBuf::from("/testfile");
         let permissions = Permissions::from(0o644);
-        let inode = fs.create_file(vec![1, 2, 3, 4, 5], &path, permissions, InodeKind::File);
+        let inode = fs.create_file(vec![1, 2, 3, 4, 5], &path);
 
         let stat = fs.lstat(&path).unwrap();
 
@@ -130,7 +145,7 @@ mod tests {
         let dir_fd = fs.open(&dir_path).unwrap();
 
         // Call fstatat on the file
-        let file_stat = fs.fstatat(dir_fd, &PathBuf::from("test_file"), false).unwrap();
+        let file_stat = fs.fstatat(dir_fd, &PathBuf::from("test_file")).unwrap();
 
         // Check the results
         assert_eq!(file_stat.st_ino, file_inode.number);
@@ -142,11 +157,11 @@ mod tests {
         let mut fs = FileSystem::new();
 
         // The initial working directory should be root.
-        assert_eq!(fs.getcwd(), Ok("/".to_string()));
+        assert_eq!(fs.getcwd().into_os_string().into_string().unwrap(), "/");
 
         // Change the working directory and check again.
         fs.current_directory = PathBuf::from("/home/user");
-        assert_eq!(fs.getcwd(), Ok("/home/user".to_string()));
+        assert_eq!(fs.getcwd().into_os_string().into_string().unwrap(), "/home/user");
     }
 
      #[test]
@@ -154,14 +169,14 @@ mod tests {
         let mut fs = FileSystem::new();
 
         // Create a directory
-        let dir_path = PathBuf::from("/test_dir");
-        fs.mkdir(&dir_path).unwrap();
+        let mut dir_path = PathBuf::from("/test_dir");
+        fs.mkdir(&mut dir_path).unwrap();
 
         // Change to the new directory
         fs.chdir(&dir_path).unwrap();
 
         // Check that the current directory has been updated
-        assert_eq!(fs.getcwd().unwrap(), dir_path);
+        assert_eq!(fs.getcwd(), dir_path);
     }
 
     #[test]
@@ -173,7 +188,7 @@ mod tests {
         assert!(fs.chdir(&dir_path).is_err());
 
         // Check that the current directory has not been updated
-        assert_eq!(fs.getcwd().unwrap(), PathBuf::from("/"));
+        assert_eq!(fs.getcwd(), PathBuf::from("/"));
     }
 
     #[test]
@@ -182,13 +197,13 @@ mod tests {
 
         // Create a file
         let file_path = PathBuf::from("/test_file");
-        fs.create_file(vec![], &file_path).unwrap();
+        fs.create_file(vec![], &file_path);
 
         // Try to change to the file
         assert!(fs.chdir(&file_path).is_err());
 
         // Check that the current directory has not been updated
-        assert_eq!(fs.getcwd().unwrap(), PathBuf::from("/"));
+        assert_eq!(fs.getcwd(), PathBuf::from("/"));
     }
 
     #[test]
@@ -196,8 +211,8 @@ mod tests {
         let mut fs = FileSystem::new();
 
         // Create a directory
-        let dir_path = PathBuf::from("/dir");
-        let dir_inode = fs.mkdir(&dir_path).unwrap();
+        let mut dir_path = PathBuf::from("/dir");
+        let dir_inode = fs.mkdir(&mut dir_path);
 
         // Open the directory
         let dir_fd = fs.open(&dir_path).unwrap();
@@ -206,22 +221,22 @@ mod tests {
         fs.fchdir(dir_fd).unwrap();
 
         // Check that the current directory has been changed
-        assert_eq!(fs.getcwd().unwrap(), "/dir");
+        assert_eq!(fs.getcwd().into_os_string().into_string().unwrap(), "/dir");
 
         // Try to change the current directory to a file
         let file_path = PathBuf::from("/dir/file");
-        fs.create_file(Vec::new(), &file_path).unwrap();
+        fs.create_file(Vec::new(), &file_path);
         let file_fd = fs.open(&file_path).unwrap();
         assert_eq!(fs.fchdir(file_fd), Err("not a directory"));
     }
 
     #[test]
     fn test_getdents() {
-        let mut fs = Filesystem::new();
+        let mut fs = FileSystem::new();
 
         // Create a directory
-        let dir_path = PathBuf::from("/test_dir");
-        fs.mkdir(&dir_path).unwrap();
+        let mut dir_path = PathBuf::from("/test_dir");
+        fs.mkdir(&mut dir_path).unwrap();
 
         // Open the directory
         let dir_fd = fs.opendir(&dir_path).unwrap();
@@ -246,27 +261,26 @@ mod tests {
     fn test_create_file() {
         let mut fs = FileSystem::new();
         let file_data = vec![1, 2, 3, 4, 5];
-        let inode = fs.create_file(file_data.clone(), Path::new("/file1").to_path_buf()).unwrap();
+        let inode = fs.create_file(file_data.clone(), &Path::new("/file1").to_path_buf());
         let file = fs.files.get(&inode).unwrap().clone();
-        assert_eq!(*file.data.lock().unwrap(), file_data);
+        assert_eq!(file.data, file_data);
     }
 
     #[test]
     fn test_unlink() {
         let mut fs = FileSystem::new();
-        let inode = fs.create_file(vec![1, 2, 3, 4, 5], Path::new("/file2").to_path_buf()).unwrap();
-        fs.unlink(&Path::new("/file2").to_path_buf()).unwrap();
+        let inode = fs.create_file(vec![1, 2, 3, 4, 5], &Path::new("/file2").to_path_buf());
+        fs.unlink(&mut Path::new("/file2").to_path_buf()).unwrap();
         assert!(fs.files.get(&inode).is_none());
     }
 
     #[test]
     fn test_rename() {
         let mut fs = FileSystem::new();
-        fs.create_file(vec![1, 2, 3, 4, 5], Path::new("/file3").to_path_buf()).unwrap();
-        fs.rename(&Path::new("/file3").to_path_buf(), &Path::new("/file4").to_path_buf()).unwrap();
-        let inode = fs.lookup_inode(&Path::new("/file4").to_path_buf()).unwrap();
-        let file = fs.files.get(&inode).unwrap().clone();
-        assert_eq!(file.path, Path::new("/file4").to_path_buf());
+        fs.create_file(vec![1, 2, 3, 4, 5], &Path::new("/file3").to_path_buf());
+        fs.rename(&mut Path::new("/file3").to_path_buf(), &Path::new("/file4").to_path_buf()).unwrap();
+        let inode = fs.lookup_inode(&Path::new("/file4").to_path_buf());
+        let file = fs.files.get(&inode.unwrap()).unwrap();
     }
 
     // FS descriptor management tests
@@ -310,23 +324,25 @@ mod tests {
     #[test]
     fn test_openat() {
         let mut fs = FileSystem::new();
-        let dir_path = PathBuf::from("/dir");
+        let mut dir_path = PathBuf::from("/dir");
         let file_path = PathBuf::from("file");
 
         // Create a new directory
-        fs.mkdir(&dir_path).unwrap();
+        fs.mkdir(&mut dir_path).unwrap();
 
         // Open a directory should fail
         assert!(fs.open(&dir_path).is_err());
 
         // Open a file in the directory should fail
-        assert!(fs.openat(fs.open(&dir_path).unwrap(), &file_path).is_err());
+        let mut first_path = fs.open(&dir_path).unwrap();
+        assert!(fs.openat(first_path, &file_path).is_err());
 
         // Create a new file in the directory
         fs.creat(&dir_path.join(&file_path)).unwrap();
 
         // Open a file in the directory should succeed
-        let fd = fs.openat(fs.open(&dir_path).unwrap(), &file_path).unwrap();
+        let mut second_path = fs.open(&dir_path).unwrap();
+        let fd = fs.openat(second_path, &file_path).unwrap();
 
         // Close the file should succeed
         assert!(fs.close(fd).is_ok());
@@ -435,23 +451,23 @@ mod tests {
     //------------
 
     #[test]
-    fn test_mkdir_rmdir() {
+     fn test_mkdir_rmdir() {
         let mut fs = FileSystem::new();
-        fs.mkdir(&Path::new("/dir1").to_path_buf()).unwrap();
-        let inode = fs.lookup_inode(&Path::new("/dir1").to_path_buf()).unwrap();
-        let file = fs.files.get(&inode).unwrap().clone();
-        assert!(matches!(file.inode.kind, InodeKind::Directory(_)));
-        fs.rmdir(&Path::new("/dir1").to_path_buf()).unwrap();
-        assert!(fs.files.get(&inode).is_none());
+        fs.mkdir(&mut Path::new("/dir1").to_path_buf()).unwrap();
+        let inode = fs.lookup_inode(&Path::new("/dir1").to_path_buf());
+        let file = fs.files.get(&inode.clone().unwrap()).unwrap().clone();
+        assert!(matches!(file.inode.kind, InodeKind::Directory));
+        fs.rmdir(&mut Path::new("/dir1").to_path_buf()).unwrap();
+        assert!(fs.files.get(&inode.unwrap()).is_none());
     }
 
-     #[test]
+    #[test]
     fn test_opendir() {
         let mut fs = FileSystem::new();
 
         // Create a new directory
-        let dir_path = PathBuf::from("/test_dir");
-        fs.mkdir(&dir_path).expect("Failed to create directory");
+        let mut dir_path = PathBuf::from("/test_dir");
+        fs.mkdir(&mut dir_path).expect("Failed to create directory");
 
         // Open the directory
         let dir_descriptor = fs.opendir(&dir_path).expect("Failed to open directory");
@@ -461,7 +477,6 @@ mod tests {
         assert!(fs.open_directories.contains_key(&dir_descriptor));
 
         let open_dir = fs.open_directories.get(&dir_descriptor).unwrap();
-        assert_eq!(Arc::ptr_eq(&open_dir.directory, fs.files.get(&1).unwrap()), true);
         assert_eq!(open_dir.position, 0);
     }
 }
