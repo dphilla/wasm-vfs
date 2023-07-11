@@ -328,14 +328,14 @@ mod tests {
         let file_path = PathBuf::from("file");
 
         // Create a new directory
-        fs.mkdir(&mut dir_path).unwrap();
+        fs.mkdir(&mut dir_path);
 
         // Open a directory should fail
         assert!(fs.open(&dir_path).is_err());
 
         // Open a file in the directory should fail
-        let mut first_path = fs.open(&dir_path).unwrap();
-        assert!(fs.openat(first_path, &file_path).is_err());
+        let mut first_path = fs.open(&dir_path);
+        assert!(fs.openat(first_path.unwrap(), &file_path).is_err());
 
         // Create a new file in the directory
         fs.creat(&dir_path.join(&file_path)).unwrap();
