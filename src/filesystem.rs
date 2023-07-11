@@ -3,8 +3,6 @@ use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
 use bincode;
 
-
-
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize)]
 pub enum InodeKind {
     #[default]
@@ -692,7 +690,6 @@ impl FileSystem {
 
         Ok(())
     }
-
 
     pub fn opendir(&mut self, path: &PathBuf) -> Result<DirectoryDescriptor, &'static str> {
         let inode = self.lookup_inode(path).ok_or("directory not found")?;

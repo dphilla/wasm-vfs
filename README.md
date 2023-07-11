@@ -56,7 +56,7 @@ Can be used with [wasm-libc](https://github.com/dphilla/wasm-libc) for (very bas
 ### File Manipulation
 - `rename`: Renames or moves a file within a filesystem.
 - `renameat`: Like rename but relative to directory file descriptors.
-- `renameat2`: Like renameat.
+- `renameat2`: Copy of renameat for this implemntation.
 - `link`: Creates a new hard link to an existing file.
 - `linkat`: Like link but relative to directory file descriptors.
 - `unlink`: Deletes a name from the filesystem. If this name was the last link to a file and no processes have it open, the file is deleted.
