@@ -6,7 +6,16 @@ A Wasm-first Virtualized Filesystem
 
 Am initial experimental implementation of a Virtual Filesystem with Syscall-like interfaces
 
-Can be used with [wasm-libc](https://github.com/dphilla/wasm-libc) for (very basic) Wasm-first file i/o operations
+Can be used with [wasm-libc-interfaces](https://github.com/dphilla/wasm-libc-interfaces) or [wasi-libc-interfaces](https://github.com/dphilla/wasi-libc-interfaces) for (very basic) Wasm-first file i/o operations
+
+## Use
+
+Wasm-VFS has a wide range of use-cases, from acting as a virtualized layer on native platforms, to working as a the primary FS abstraction in Wasm-first application evnironments. Some examples:
+
+- cient-side app deployment(link)
+- a safer OSI image(link) (swapping for a native FS in a docker img)
+- kernel-free boxes(link)
+- truly isomorphic operating environments(link)
 
 **Not yet for production use - use at own risk**
 
@@ -41,7 +50,7 @@ Can be used with [wasm-libc](https://github.com/dphilla/wasm-libc) for (very bas
 - `chdir`: Changes the current working directory.
 - `fchdir`: Changes the current working directory to the one associated with a file descriptor.
 
-### Permissions and Ownership
+### Permissions and Ownership - TODO
 - `chmod`: Changes permissions of a file.
 - `fchmod`: Changes permissions of a file given by a file descriptor.
 - `fchmodat`: Like chmod but relative to a directory file descriptor.
@@ -53,7 +62,7 @@ Can be used with [wasm-libc](https://github.com/dphilla/wasm-libc) for (very bas
 - `faccessat`: Like access but relative to a directory file descriptor.
 - `umask`: Sets the calling process's file mode creation mask.
 
-### File Manipulation
+### File Manipulation -- TODO
 - `rename`: Renames or moves a file within a filesystem.
 - `renameat`: Like rename but relative to directory file descriptors.
 - `renameat2`: Copy of renameat for this implemntation.
@@ -74,7 +83,7 @@ Can be used with [wasm-libc](https://github.com/dphilla/wasm-libc) for (very bas
 - `posix_fallocate`: Allocates space to a file descriptor, unlike fallocate, this is a synchronous operation.
 - `flock`: Apply or remove an advisory lock on the open file referred to by the file descriptor.
 
-### Memory Mapping
+### Memory Mapping -- TODO
 - `mmap`: Maps a file into memory.
 - `munmap`: Unmaps a file from memory.
 - `mprotect`: Sets protection on a region of memory.
@@ -82,17 +91,16 @@ Can be used with [wasm-libc](https://github.com/dphilla/wasm-libc) for (very bas
 - `munlock`: Unlocks memory previously locked with mlock.
 - `msync`: Synchronizes a region of mapped memory.
 
-## Future Implementations
+### File Synchronization
+- `sync`: This system call causes all pending modifications to filesystem metadata and data to be written out to the disk. This ensures that the state of the filesystem matches what the system has in its buffers, but it operates on the whole system, which can be a broad stroke if you're focused on a specific file or filesystem. This is adaptable for Wasm host functions - see extensions.
+- `fsync`: This system call is similar to sync, but it's more specific—it only affects the file referred to by the file descriptor passed to it. It causes all buffered data for that file to be written to the disk (or other permanent storage).
+- `fdatasync`: This is similar to fsync, but it only writes out the file's data, not its metadata (unless the metadata is needed to retrieve the data). This can be a bit faster than fsync if the metadata hasn't changed.
+- `syncfs`: This system call is again similar to sync and fsync, but it operates on a specific filesystem. You give it a file descriptor, and it writes out all buffered data for that filesystem. It's a middle ground between the very specific fsync and the very general sync.
+
+## Future Implementation
 
 ### File Notification
 - `inotify_init`: Initializes an instance of inotify.
 - `inotify_init1`: Like inotify_init but with additional flags.
 - `inotify_add_watch`: Adds a watch to an inotify instance.
 - `inotify_rm_watch`: Removes a watch from an inotify instance.
-
-### File Synchronization
-- `sync`: This system call causes all pending modifications to filesystem metadata and data to be written out to the disk. This ensures that the state of the filesystem matches what the system has in its buffers, but it operates on the whole system, which can be a broad stroke if you're focused on a specific file or filesystem.
-- `fsync`: This system call is similar to sync, but it's more specific—it only affects the file referred to by the file descriptor passed to it. It causes all buffered data for that file to be written to the disk (or other permanent storage).
-- `fdatasync`: This is similar to fsync, but it only writes out the file's data, not its metadata (unless the metadata is needed to retrieve the data). This can be a bit faster than fsync if the metadata hasn't changed.
-- `syncfs`: This system call is again similar to sync and fsync, but it operates on a specific filesystem. You give it a file descriptor, and it writes out all buffered data for that filesystem. It's a middle ground between the very specific fsync and the very general sync.
-
