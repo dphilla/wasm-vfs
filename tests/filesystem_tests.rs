@@ -319,7 +319,6 @@ mod tests {
 
         // Create the same file again should fail
         //assert!(fs.creat(&path).is_err());
-        println!("{}", fs.creat(&path).unwrap());
     }
 
     #[test]
@@ -353,27 +352,27 @@ mod tests {
     fn test_dup_dup2() {
         let mut fs = FileSystem::new();
         let path = PathBuf::from("/test");
-
         // Create a new file
         let fd = fs.creat(&path).unwrap();
-
-        // Duplicate the file descriptor should succeed
         let new_fd = fs.dup(fd).unwrap();
 
-        // Close the original file descriptor should succeed
-        assert!(fs.close(fd).is_ok());
-
-        // Close the duplicated file descriptor should succeed
-        assert!(fs.close(new_fd).is_ok());
-
-        // Duplicate a closed file descriptor should fail
-        assert!(fs.dup(fd).is_err());
-
-        // Duplicate to a specific file descriptor should succeed
+        // dup  the original file descriptor should succeed
         assert!(fs.dup2(fd, new_fd).is_ok());
 
         // Close the specific file descriptor should succeed
         assert!(fs.close(new_fd).is_ok());
+
+        // Close the specific file descriptor should succeed
+        assert!(fs.close(fd).is_ok());
+
+        // Duplicate a closed file descriptor should fail
+        assert!(fs.dup(fd).is_err());
+
+        // Duplicate to a specific file descriptor that has been closed should fail
+        assert!(fs.dup2(fd, new_fd).is_err());
+
+        // Close the specific file descriptor already closed should fail
+        assert!(fs.close(new_fd).is_err());
     }
 
 
