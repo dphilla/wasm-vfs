@@ -104,3 +104,5 @@ Wasm-VFS has a wide range of use-cases, from acting as a virtualized layer on na
 - `inotify_init1`: Like inotify_init but with additional flags.
 - `inotify_add_watch`: Adds a watch to an inotify instance.
 - `inotify_rm_watch`: Removes a watch from an inotify instance.
+
+Reference specification: the [man pages]()https://linux.die.net/man/2/ and more specifically, [the IEEE reference](https://pubs.opengroup.org/onlinepubs/9699919799/)
