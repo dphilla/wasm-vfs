@@ -14,13 +14,7 @@ pub enum InodeKind {
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
 pub struct DirectoryEntry {
     pub name: String,
-    pub inode: Inode,
-
-    // recs below are  more typical to flat-file
-    // impl of dirents, may be used in future
-    offset: i64,
-    record_length: usize,
-    file_type: String,
+    pub inode: Inode, // refactor: just reference
 }
 
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Default, Serialize)]
@@ -34,6 +28,12 @@ pub struct Inode {
     pub mtime: u64,
     pub atime: u64,
     pub kind: InodeKind,
+
+    // In a unix filesystems, the field below would likely
+    // be an i_block, with one or more pointers to the actual
+    // blocks where the data is stored. This is easier/less
+    // confusing for our purposes
+    pub file: File, // change to ref
 }
 
 impl Inode {
@@ -109,19 +109,25 @@ pub type DirectoryDescriptor = i32;
 
 #[derive(Debug, Clone)]
 pub struct File {
-    pub inode: Inode,
+    pub inode: u64,
     pub data: Vec<u8>,
     pub position: u64,
     //pub path: PathBuf
+
+    // In unix filesystems a Directory is actually a file ("eveything is a file"...)
+    // and it is persisted as a Directory File, which contains a list of Directory Entries
+    // that is read and used to determine name -> inode relationhips and thus hierarchy, etc.
+    // instead of that, we are just using the below dirents structure for expediency
     pub dirents: Vec<DirectoryEntry>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct OpenFile {
     pub file: File,
     pub position: u64,
 }
 
+#[derive(Debug)]
 pub struct OpenDirectory {
     pub directory: Inode,
     pub position: usize,
@@ -175,15 +181,17 @@ impl OpenFile {
 
 }
 
-// for now, there is a 1:1 with files:inodes, bc its a VFS
-// in the future, a separation of files via OpenFile and File (possibly in a layer
-// representing more persistent storage, could be possible)
+#[derive(Debug)]
 pub struct FileSystem {
+    //  the inodes field here is a simplified form of a Unix Inode Table.
+    //  See: https://exposnitc.github.io/os_design-files/disk_ds.html.
+    //  This is crucial for constant time operations accessing file metadata,
+    //  as **each index in this vec acts as each inode number**
+    pub inodes: Vec<Inode>,
     pub files: HashMap<Inode, File>,
     pub next_inode_number: u64,
     pub open_files: HashMap<FileDescriptor, OpenFile>,
     pub next_fd: FileDescriptor,
-    pub next_directory_descriptor: DirectoryDescriptor,
     pub open_directories: HashMap<DirectoryDescriptor, OpenDirectory>,
     pub current_directory: PathBuf,
     pub root_inode: Inode
@@ -192,23 +200,31 @@ pub struct FileSystem {
 impl FileSystem {
     pub fn new() -> Self {
 
-         // Create root directory inode, and first file (directory)
-        let inode = Inode::new(1, 0, Permissions::default(), 0, 0, 0, 0, 0, InodeKind::Directory);
-        let file = File { inode: inode.clone(), data: Vec::new(), position: 0, dirents: vec![] };
+         // Create root directory inode, and first file (directory), in future will be able to read
+         // from external FS/block device, etc.
+        let mut inode = Inode::new(1, 0, Permissions::default(), 0, 0, 0, 0, 0, InodeKind::Directory);
+
+        let root_dirents = vec![
+            DirectoryEntry::new(name: ".", inode: inode.number),
+            DirectoryEntry::new(name: "..", inode: inode.number)
+        ];
+        let file = File { inode: inode.number, data: Vec::new(), position: 0, dirents: root_dirents };
 
         let mut fs = Self {
-            files: HashMap::new(),
+            // In many FSs, all inodes are made on creation. Here, they
+            // will be made with every new file, to conserve memory footprint
+            inodes: Vec!(inode),
             next_inode_number: 1,
             open_files:  HashMap::new(),
-            next_fd: 1,
-            next_directory_descriptor: 1,
-            open_directories:   HashMap::new(),
-            current_directory: PathBuf::from("/"),
+            next_fd: 1, // rm
+            open_directories:   HashMap::new(), // move to process
+            current_directory: PathBuf::from("/"), // move to process
             root_inode: inode.clone(),
         };
 
         fs.next_inode_number += 1;
         fs.files.insert(inode.clone(), file);
+        //println!("{:#?}", fs);
 
         fs
     }
@@ -692,25 +708,7 @@ impl FileSystem {
     }
 
     pub fn opendir(&mut self, path: &PathBuf) -> Result<DirectoryDescriptor, &'static str> {
-        let inode = self.lookup_inode(path).ok_or("directory not found")?;
-
-        // check if the inode is a directory
-        match self.files.get(&inode).unwrap().inode.kind {
-            InodeKind::Directory => (),
-            _ => return Err("Not a directory"),
-        };
-
-        let directory_descriptor = self.next_directory_descriptor;
-        self.next_directory_descriptor += 1;
-
-        let open_directory = OpenDirectory {
-            directory: inode.clone().into(),
-            position: 0,
-        };
-
-        self.open_directories.insert(directory_descriptor, open_directory);
-
-        Ok(directory_descriptor)
+        unimplemented!()
     }
 
     // for future iterations, "disk" could by any other entity outside of module/component

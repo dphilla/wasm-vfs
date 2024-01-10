@@ -100,12 +100,15 @@ mod tests {
     fn test_filesystem_fstat() {
         let mut fs = FileSystem::new();
         let path = PathBuf::from("/test/file");
-        let mut inode = fs.lookup_inode(&path);
 
-        let fd = inode.clone().unwrap().number as i32;
-        let stat = fs.fstat(fd.clone()).unwrap();
+        // Create a file at the given path to ensure the inode exists.
+        let fd = fs.creat(&path).expect("Failed to create file");
 
-        assert_eq!(stat.st_ino, inode.unwrap().number);
+        let stat = fs.fstat(fd).expect("Failed to get file stats");
+
+        // Retrieve inode to compare its number with the one from stat.
+        let inode = fs.lookup_inode(&path).expect("Failed to find inode");
+        assert_eq!(stat.st_ino, inode.number, "Inode numbers do not match");
     }
 
     #[test]
