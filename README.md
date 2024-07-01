@@ -6,16 +6,13 @@ A Wasm-first Virtualized Filesystem
 
 Am initial experimental implementation of a Virtual Filesystem with Syscall-like interfaces
 
-Can be used with [wasm-libc-interfaces](https://github.com/dphilla/wasm-libc-interfaces) or [wasi-libc-interfaces](https://github.com/dphilla/wasi-libc-interfaces) for (very basic) Wasm-first file i/o operations
-
 ## Use
 
 Wasm-VFS has a wide range of use-cases, from acting as a virtualized layer on native platforms, to working as a the primary FS abstraction in Wasm-first application evnironments. Some examples:
 
 - cient-side app deployment(link)
-- a safer OSI image(link) (swapping for a native FS in a docker img)
-- kernel-free boxes(link)
-- truly isomorphic operating environments(link)
+- a safer OSI image
+- truly isomorphic operating environments
 
 **Not yet for production use - use at own risk**
 
@@ -50,7 +47,7 @@ Wasm-VFS has a wide range of use-cases, from acting as a virtualized layer on na
 - `chdir`: Changes the current working directory.
 - `fchdir`: Changes the current working directory to the one associated with a file descriptor.
 
-### Permissions and Ownership - TODO
+### Permissions and Ownership 
 - `chmod`: Changes permissions of a file.
 - `fchmod`: Changes permissions of a file given by a file descriptor.
 - `fchmodat`: Like chmod but relative to a directory file descriptor.
@@ -62,7 +59,7 @@ Wasm-VFS has a wide range of use-cases, from acting as a virtualized layer on na
 - `faccessat`: Like access but relative to a directory file descriptor.
 - `umask`: Sets the calling process's file mode creation mask.
 
-### File Manipulation -- TODO
+### File Manipulation
 - `rename`: Renames or moves a file within a filesystem.
 - `renameat`: Like rename but relative to directory file descriptors.
 - `renameat2`: Copy of renameat for this implemntation.
@@ -83,7 +80,7 @@ Wasm-VFS has a wide range of use-cases, from acting as a virtualized layer on na
 - `posix_fallocate`: Allocates space to a file descriptor, unlike fallocate, this is a synchronous operation.
 - `flock`: Apply or remove an advisory lock on the open file referred to by the file descriptor.
 
-### Memory Mapping -- TODO
+### Memory Mapping
 - `mmap`: Maps a file into memory.
 - `munmap`: Unmaps a file from memory.
 - `mprotect`: Sets protection on a region of memory.
@@ -105,4 +102,6 @@ Wasm-VFS has a wide range of use-cases, from acting as a virtualized layer on na
 - `inotify_add_watch`: Adds a watch to an inotify instance.
 - `inotify_rm_watch`: Removes a watch from an inotify instance.
 
-Reference specification: the [man pages]()https://linux.die.net/man/2/ and more specifically, [the IEEE reference](https://pubs.opengroup.org/onlinepubs/9699919799/)
+## Reference specification
+
+[man pages](https://linux.die.net/man/2/) and more specifically, [the IEEE reference](https://pubs.opengroup.org/onlinepubs/9699919799/)
