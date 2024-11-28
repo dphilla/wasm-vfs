@@ -49,80 +49,142 @@ const O_CREAT: i32 = 64;
 const O_TRUNC: i32 = 512;
 const O_APPEND: i32 = 1024;
 
+// https://man7.org/linux/man-pages/man2/open.2.html
+//const O_EXCL: i32 = 128;       // 0x80
+//const O_NONBLOCK: i32 = 2048;  // 0x800
+//const O_SYNC: i32 = 4096;      // 0x1000
+//const O_NOCTTY: i32 = 131072;  // 0x20000
+//const O_NOFOLLOW: i32 = 256;   // 0x100
+//const O_DIRECTORY: i32 = 65536;// 0x10000
+
 #[no_mangle]
 pub extern "C" fn open(path: *const i8, flags: i32, mode: u32) -> i32 {
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
     let path_buf = PathBuf::from(path_str);
 
-    let mut proc = get_or_init_proc(); // Assuming this function is defined
+    let mut proc = get_or_init_proc();
 
     let should_create = flags & O_CREAT == O_CREAT;
     let should_truncate = flags & O_TRUNC == O_TRUNC;
     let append_mode = flags & O_APPEND == O_APPEND;
 
-    // File lookup or creation
-    let mut inode = match proc.fs.inodes.iter().find(|inode| inode.path == path_buf) {
-        Some(inode) => inode.clone(),
-        None => {
-            if should_create {
-                // Create a new inode
-                let new_inode = Inode::new(
-                    proc.fs.next_inode_number,
-                    0, // size
-                    Permissions::from(mode as u16),
-                    0, // user_id
-                    0, // group_id
-                    0, // ctime
-                    0, // mtime
-                    0, // atime
-                    InodeKind::File,
-                );
-                proc.fs.inodes.push(new_inode.clone());
-                proc.fs.next_inode_number += 1;
-                new_inode
-            } else {
-                return -1; // File does not exist and O_CREAT is not set
+    // Check if the file exists in the filesystem
+    let inode_opt = proc
+        .as_mut()
+        .unwrap()
+        .fs
+        .inodes
+        .iter()
+        .find(|inode| match &inode.kind {
+            InodeKind::File | InodeKind::SymbolicLink(_) => {
+                FileSystem::construct_path(&File {
+                    inode: inode.number,
+                    data: vec![],
+                    position: 0,
+                }) == path_buf
             }
-        }
+            _ => false,
+        });
+
+    let inode = if let Some(inode) = inode_opt {
+        inode.clone()
+    } else if should_create {
+        // Create a new inode if O_CREAT is set
+        let new_inode = Inode::new(
+            proc.as_mut().unwrap().fs.next_inode_number,
+            0,
+            Permissions::from(mode as u16),
+            0, // user_id
+            0, // group_id
+            0, // ctime
+            0, // mtime
+            0, // atime
+            InodeKind::File,
+        );
+        proc.as_mut().unwrap().fs.inodes.push(new_inode.clone());
+        proc.as_mut().unwrap().fs.next_inode_number += 1;
+        new_inode
+    } else {
+        // File not found and O_CREAT not set
+        return -1;
     };
 
-    if should_truncate && inode.kind == InodeKind::File {
-        // Truncate the file (reset its size and data)
+    if should_truncate {
         inode.size = 0;
-        // Assuming File data reset logic here
+        // Assume reset logic for associated file data if needed
     }
 
-    // Handle append mode
+    // Handle append mode if set
     if append_mode {
-        // Logic to set the file position to the end for writing
-        // Assuming File position handling logic here
+        // Assume logic to move the file pointer to the end
     }
 
-    // Assign a file descriptor
-    let fd = proc.next_fd;
-    proc.fd_table.insert(fd, inode);
-    proc.next_fd += 1;
+    // Assign the next file descriptor
+    let fd = proc.as_mut().unwrap().next_fd;
+    proc.as_mut().unwrap().fd_table[fd as usize] = inode.clone();
+    proc.as_mut().unwrap().next_fd += 1;
 
     fd
 }
 
+
 #[no_mangle]
 pub extern "C" fn close(fd: i32) -> i32 {
-    let proc = get_or_init_proc();
-    unimplemented!()
+    let mut proc = get_or_init_proc();
+    let proc = proc.as_mut().unwrap();
+
+    if let Some(_) = proc.fd_table.get(fd as usize) {
+        proc.fd_table[fd as usize] = Default::default(); // Clear the slot in the FD table
+        0 // Success
+    } else {
+        -1 // Invalid file descriptor
+    }
 }
+
 
 #[no_mangle]
 pub extern "C" fn creat(path: *const i8, mode: u32) -> i32 {
-    let proc = get_or_init_proc();
-    unimplemented!()
+    open(path, O_WRONLY | O_CREAT | O_TRUNC, mode)
 }
+
 
 #[no_mangle]
 pub extern "C" fn openat(dirfd: i32, pathname: *const i8, flags: i32, mode: u32) -> i32 {
-    let proc = get_or_init_proc();
-    unimplemented!()
+    let mut proc = get_or_init_proc();
+    let proc = proc.as_mut().unwrap();
+
+    // If dirfd is AT_FDCWD (-100), interpret as relative to the current working directory
+    let base_path = if dirfd == libc::AT_FDCWD {
+        proc.fs.current_directory.clone()
+    } else {
+        match proc.fd_table.get(dirfd as usize) {
+            Some(inode) => match &inode.kind {
+                InodeKind::Directory => {
+                    FileSystem::construct_path(&File {
+                        inode: inode.number,
+                        data: vec![],
+                        position: 0,
+                    })
+                }
+                _ => return -1, // Not a directory
+            },
+            None => return -1, // Invalid dirfd
+        }
+    };
+
+    let path_str = unsafe { CStr::from_ptr(pathname).to_string_lossy().into_owned() };
+    let full_path = base_path.join(path_str);
+
+    // Call `open()` with the constructed full path
+    open(
+        CString::new(full_path.to_string_lossy().into_owned())
+            .unwrap()
+            .as_ptr(),
+        flags,
+        mode,
+    )
 }
+
 
 #[no_mangle]
 pub extern "C" fn dup(oldfd: i32) -> i32 {
