@@ -8,30 +8,80 @@ use crate::filesystem::*;
 
 pub type FileDescriptor = i32;
 
-struct Proc {
+// TODO - proc will be its own lib, used here and with /net stuff, for unix Process mgmt stuff, etc
+//
+// EAch named thing is a separate Wasm module:
+//
+//
+//                     pkc
+//                     /|\
+//                    / | \
+
+//
+// VFS --- Proc --- Net        ...
+//   \      |      /
+//    \     |     /
+//         libc
+//          |     (else: Interfaces to
+//          |     devices, user
+//          |     input, etc.)
+//          |
+//      User program
+//
+// -------------------
+
+pub struct Proc {
     fs: FileSystem,
-    //In a kernel, maybe this would fd -> vnode,
+
+    //In a kernel, maybe these might be vnodes in the fd_table,
     //but since, for now, we are just dealing with
     //a VFS, were just going to use the inodes directly
-    fd_table: HashMap<FileDescriptor, Inode>,
+
+
+    //Array is for look up speed, etc. The index is the FD
+    //Max 1024 is taken from linux convention
+
+    // Use a fixed-size array for file descriptors. Each index represents an FD.
+    fd_table: [Option<Inode>; 1024],
     next_fd: FileDescriptor,
 }
 
 impl Proc {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             fs: FileSystem::new(),
-            fd_table: HashMap::new(),
-            // start at three because ppl may be used to
-            // the conventional stdin(0) stdout(1) and stderr(2).
-            next_fd: 3,
+            fd_table: [None; 1024], // Initialize all slots to None
+            next_fd: 3,            // Start after stdin(0), stdout(1), stderr(2)
         }
     }
+
+    // Helper to find the next available FD
+    fn allocate_fd(&mut self) -> Option<FileDescriptor> {
+        for (index, slot) in self.fd_table.iter().enumerate() {
+            if slot.is_none() {
+                return Some(index as FileDescriptor);
+            }
+        }
+        None
+    }
 }
+
+#[cfg_attr(target_arch = "wasm32", export_name = "init_proc")]
+#[no_mangle]
+pub unsafe extern "C" fn init_proc(size: u32) -> *const u8 {
+    unimplemented!()
+}
+
 
 lazy_static! {
     static ref GLOBAL_PROC: Mutex<Option<Proc>> = Mutex::new(None);
 }
+
+// Proc is intended to be instantiated from a separate Wasm module
+// however it can be used local to this module if not sharing with
+// other externel resource modules (wasm-net, etc.). This is an option.
+//
+
 
 fn get_or_init_proc() -> MutexGuard<'static, Option<Proc>> {
     let mut proc = GLOBAL_PROC.lock().unwrap();
@@ -68,28 +118,15 @@ pub extern "C" fn open(path: *const i8, flags: i32, mode: u32) -> i32 {
     let should_truncate = flags & O_TRUNC == O_TRUNC;
     let append_mode = flags & O_APPEND == O_APPEND;
 
-    // Check if the file exists in the filesystem
-    let inode_opt = proc
-        .as_mut()
-        .unwrap()
-        .fs
-        .inodes
-        .iter()
-        .find(|inode| match &inode.kind {
-            InodeKind::File | InodeKind::SymbolicLink(_) => {
-                FileSystem::construct_path(&File {
-                    inode: inode.number,
-                    data: vec![],
-                    position: 0,
-                }) == path_buf
-            }
-            _ => false,
-        });
-
-    let inode = if let Some(inode) = inode_opt {
+    let inode = if let Some(inode) = proc.as_mut().unwrap().fs.inodes.iter().find(|inode| {
+        FileSystem::construct_path(&File {
+            inode: inode.number,
+            data: vec![],
+            position: 0,
+        }) == path_buf
+    }) {
         inode.clone()
     } else if should_create {
-        // Create a new inode if O_CREAT is set
         let new_inode = Inode::new(
             proc.as_mut().unwrap().fs.next_inode_number,
             0,
@@ -105,77 +142,69 @@ pub extern "C" fn open(path: *const i8, flags: i32, mode: u32) -> i32 {
         proc.as_mut().unwrap().fs.next_inode_number += 1;
         new_inode
     } else {
-        // File not found and O_CREAT not set
-        return -1;
+        return -1; // File not found, and O_CREAT not set
     };
 
     if should_truncate {
         inode.size = 0;
-        // Assume reset logic for associated file data if needed
     }
 
-    // Handle append mode if set
-    if append_mode {
-        // Assume logic to move the file pointer to the end
+    // Find the next available file descriptor
+    let fd = proc.as_mut().unwrap().allocate_fd();
+    if let Some(fd) = fd {
+        proc.as_mut().unwrap().fd_table[fd as usize] = Some(inode);
+        fd
+    } else {
+        -1 // No available file descriptor
     }
-
-    // Assign the next file descriptor
-    let fd = proc.as_mut().unwrap().next_fd;
-    proc.as_mut().unwrap().fd_table[fd as usize] = inode.clone();
-    proc.as_mut().unwrap().next_fd += 1;
-
-    fd
 }
-
 
 #[no_mangle]
 pub extern "C" fn close(fd: i32) -> i32 {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
-    if let Some(_) = proc.fd_table.get(fd as usize) {
-        proc.fd_table[fd as usize] = Default::default(); // Clear the slot in the FD table
+    if (fd as usize) < proc.fd_table.len() && proc.fd_table[fd as usize].is_some() {
+        proc.fd_table[fd as usize] = None; // Clear the file descriptor slot
         0 // Success
     } else {
         -1 // Invalid file descriptor
     }
 }
 
-
 #[no_mangle]
 pub extern "C" fn creat(path: *const i8, mode: u32) -> i32 {
     open(path, O_WRONLY | O_CREAT | O_TRUNC, mode)
 }
-
 
 #[no_mangle]
 pub extern "C" fn openat(dirfd: i32, pathname: *const i8, flags: i32, mode: u32) -> i32 {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
-    // If dirfd is AT_FDCWD (-100), interpret as relative to the current working directory
     let base_path = if dirfd == libc::AT_FDCWD {
         proc.fs.current_directory.clone()
-    } else {
-        match proc.fd_table.get(dirfd as usize) {
-            Some(inode) => match &inode.kind {
-                InodeKind::Directory => {
-                    FileSystem::construct_path(&File {
-                        inode: inode.number,
-                        data: vec![],
-                        position: 0,
-                    })
-                }
-                _ => return -1, // Not a directory
-            },
-            None => return -1, // Invalid dirfd
+    } else if (dirfd as usize) < proc.fd_table.len() {
+        if let Some(inode) = &proc.fd_table[dirfd as usize] {
+            if let InodeKind::Directory = inode.kind {
+                FileSystem::construct_path(&File {
+                    inode: inode.number,
+                    data: vec![],
+                    position: 0,
+                })
+            } else {
+                return -1; // Not a directory
+            }
+        } else {
+            return -1; // Invalid file descriptor
         }
+    } else {
+        return -1; // Invalid file descriptor
     };
 
     let path_str = unsafe { CStr::from_ptr(pathname).to_string_lossy().into_owned() };
     let full_path = base_path.join(path_str);
 
-    // Call `open()` with the constructed full path
     open(
         CString::new(full_path.to_string_lossy().into_owned())
             .unwrap()
@@ -185,17 +214,35 @@ pub extern "C" fn openat(dirfd: i32, pathname: *const i8, flags: i32, mode: u32)
     )
 }
 
-
 #[no_mangle]
 pub extern "C" fn dup(oldfd: i32) -> i32 {
-    let proc = get_or_init_proc();
-    unimplemented!()
+    let mut proc = get_or_init_proc();
+    let proc = proc.as_mut().unwrap();
+
+    if (oldfd as usize) < proc.fd_table.len() {
+        if let Some(inode) = &proc.fd_table[oldfd as usize] {
+            let new_fd = proc.allocate_fd();
+            if let Some(new_fd) = new_fd {
+                proc.fd_table[new_fd as usize] = Some(inode.clone());
+                return new_fd;
+            }
+        }
+    }
+    -1 // Invalid oldfd or no available new file descriptor
 }
 
 #[no_mangle]
 pub extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
-    let proc = get_or_init_proc();
-    unimplemented!()
+    let mut proc = get_or_init_proc();
+    let proc = proc.as_mut().unwrap();
+
+    if (oldfd as usize) < proc.fd_table.len() && (newfd as usize) < proc.fd_table.len() {
+        if let Some(inode) = &proc.fd_table[oldfd as usize] {
+            proc.fd_table[newfd as usize] = Some(inode.clone());
+            return newfd;
+        }
+    }
+    -1 // Invalid oldfd or newfd
 }
 
 #[repr(C)]
