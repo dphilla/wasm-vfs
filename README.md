@@ -11,7 +11,7 @@ Am initial experimental implementation of a Virtual Filesystem with Syscall-like
 Wasm-VFS has a wide range of use-cases, from acting as a virtualized layer on native platforms, to working as a the primary FS abstraction in Wasm-first application evnironments. Some examples:
 
 - cient-side app deployment(link)
-- a safer OSI image
+- a safer OCI image
 - truly isomorphic operating environments
 
 **Not yet for production use - use at own risk**
