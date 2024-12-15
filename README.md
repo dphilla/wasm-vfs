@@ -4,19 +4,18 @@ A Wasm-first Virtualized Filesystem
 
 ## Description
 
-Am initial experimental implementation of a Virtual Filesystem with Syscall-like interfaces
+An implementation of a POSIX-compliant Filesystem, specifically made to target WebAssembly
 
 ## Use
 
-Wasm-VFS has a wide range of use-cases, from acting as a virtualized layer on native platforms, to working as a the primary FS abstraction in Wasm-first application evnironments. Some examples:
+`wasm-vfs` has a wide range of use-cases, from acting as a virtualized layer on native platforms, to working as a the primary FS abstraction in Wasm-first application environments. Some examples:
 
-- cient-side app deployment(link)
-- a safer OCI image
-- truly isomorphic operating environments
+- General-purpose Virtualized FS - userspace, on edge, in browsers, etc.
+- A snapshottable, safer OCI image
+- Truly isomorphic operating environments
+- Used as base FS layer in [boxer](https://boxer.dev)
 
-**Not yet for production use - use at own risk**
-
-## Implemented Calls (planned)
+## Support -- please open an issue with questions
 
 ### File Descriptor Management
 - `open`: Opens a file and returns a file descriptor.
@@ -47,7 +46,7 @@ Wasm-VFS has a wide range of use-cases, from acting as a virtualized layer on na
 - `chdir`: Changes the current working directory.
 - `fchdir`: Changes the current working directory to the one associated with a file descriptor.
 
-### Permissions and Ownership 
+### Permissions and Ownership
 - `chmod`: Changes permissions of a file.
 - `fchmod`: Changes permissions of a file given by a file descriptor.
 - `fchmodat`: Like chmod but relative to a directory file descriptor.
