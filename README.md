@@ -4,16 +4,14 @@ A Wasm-first Virtualized Filesystem
 
 ## Description
 
-Am initial experimental implementation of a Virtual Filesystem with Syscall-like interfaces
-
-Can be used with [wasm-libc-interfaces](https://github.com/dphilla/wasm-libc-interfaces) or [wasi-libc-interfaces](https://github.com/dphilla/wasi-libc-interfaces) for (very basic) Wasm-first file i/o operations
+Am implementation of a POSIX-like Virtual Filesystem
 
 ## Use
 
 Wasm-VFS has a wide range of use-cases, from acting as a virtualized layer on native platforms, to working as a the primary FS abstraction in Wasm-first application evnironments. Some examples:
 
 - cient-side app deployment(link)
-- a safer OSI image(link) (swapping for a native FS in a docker img)
+- a safer OCI image(link) (swapping for a native FS in a docker img)
 - kernel-free boxes(link)
 - truly isomorphic operating environments(link)
 

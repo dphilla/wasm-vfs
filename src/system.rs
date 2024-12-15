@@ -1,48 +1,53 @@
-use std::collections::HashMap;
-use std::ffi::CStr;
-use std::sync::MutexGuard;
+use std::ffi::{CStr, CString};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use lazy_static::lazy_static;
 use crate::filesystem::*;
+use std::cmp;
 
 pub type FileDescriptor = i32;
 
-// TODO - proc will be its own lib, used here and with /net stuff, for unix Process mgmt stuff, etc
-//
-// EAch named thing is a separate Wasm module:
-//
-//
-//                     pkc
-//                     /|\
-//                    / | \
+struct OpenFileHandle {
+    inode_number: u64,
+    position: u64,
+    append_mode: bool,
+}
 
-//
-// VFS --- Proc --- Net        ...
-//   \      |      /
-//    \     |     /
-//         libc
-//          |     (else: Interfaces to
-//          |     devices, user
-//          |     input, etc.)
-//          |
-//      User program
-//
-// -------------------
+-// TODO - proc will be its own lib, used here and with /net stuff, for unix Process mgmt stuff, etc
+-//
+-// EAch named thing is a separate Wasm module:
+-//
+-//
+-//                     pkc
+-//                     /|\
+-//                    / | \
+-
+-//
+-// VFS --- Proc --- Net        ...
+-//   \      |      /
+-//    \     |     /
+-//         libc
+-//          |     (else: Interfaces to
+-//          |     devices, user
+-//          |     input, etc.)
+-//          |
+-//      User program
+-//
+-// -------------------
+ //
+
+-// Proc is intended to be instantiated from a separate Wasm module
+-// however it can be used local to this module if not sharing with
+-// other externel resource modules (wasm-net, etc.). This is an option.
+-//
 
 pub struct Proc {
-    fs: FileSystem,
+    pub fs: FileSystem,
 
-    //In a kernel, maybe these might be vnodes in the fd_table,
-    //but since, for now, we are just dealing with
-    //a VFS, were just going to use the inodes directly
-
-
-    //Array is for look up speed, etc. The index is the FD
-    //Max 1024 is taken from linux convention
-
-    // Use a fixed-size array for file descriptors. Each index represents an FD.
-    fd_table: [Option<Inode>; 1024],
+    // Instead of storing Inode here, we just store the inode number.
+    // In a real FS, the inode number acts like an index; we can always reference fs.inodes.
+    fd_table: [Option<u64>; 1024],
+    open_files: std::collections::HashMap<FileDescriptor, OpenFileHandle>,
     next_fd: FileDescriptor,
 }
 
@@ -50,15 +55,16 @@ impl Proc {
     pub fn new() -> Self {
         Self {
             fs: FileSystem::new(),
-            fd_table: [None; 1024], // Initialize all slots to None
-            next_fd: 3,            // Start after stdin(0), stdout(1), stderr(2)
+            fd_table: [None; 1024],
+            open_files: std::collections::HashMap::new(),
+            next_fd: 3,
         }
     }
 
-    // Helper to find the next available FD
+    // Find the next available FD
     fn allocate_fd(&mut self) -> Option<FileDescriptor> {
         for (index, slot) in self.fd_table.iter().enumerate() {
-            if slot.is_none() {
+            if slot.is_none() && index >= 3 {
                 return Some(index as FileDescriptor);
             }
         }
@@ -66,27 +72,13 @@ impl Proc {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", export_name = "init_proc")]
-#[no_mangle]
-pub unsafe extern "C" fn init_proc(size: u32) -> *const u8 {
-    unimplemented!()
-}
-
-
 lazy_static! {
     static ref GLOBAL_PROC: Mutex<Option<Proc>> = Mutex::new(None);
 }
 
-// Proc is intended to be instantiated from a separate Wasm module
-// however it can be used local to this module if not sharing with
-// other externel resource modules (wasm-net, etc.). This is an option.
-//
-
-
 fn get_or_init_proc() -> MutexGuard<'static, Option<Proc>> {
     let mut proc = GLOBAL_PROC.lock().unwrap();
     if proc.is_none() {
-        // Initialize if not already done
         *proc = Some(Proc::new());
     }
     proc
@@ -99,13 +91,10 @@ const O_CREAT: i32 = 64;
 const O_TRUNC: i32 = 512;
 const O_APPEND: i32 = 1024;
 
-// https://man7.org/linux/man-pages/man2/open.2.html
-//const O_EXCL: i32 = 128;       // 0x80
-//const O_NONBLOCK: i32 = 2048;  // 0x800
-//const O_SYNC: i32 = 4096;      // 0x1000
-//const O_NOCTTY: i32 = 131072;  // 0x20000
-//const O_NOFOLLOW: i32 = 256;   // 0x100
-//const O_DIRECTORY: i32 = 65536;// 0x10000
+#[no_mangle]
+pub unsafe extern "C" fn init_proc(_size: u32) -> *const u8 {
+    unimplemented!()
+}
 
 #[no_mangle]
 pub extern "C" fn open(path: *const i8, flags: i32, mode: u32) -> i32 {
@@ -113,50 +102,56 @@ pub extern "C" fn open(path: *const i8, flags: i32, mode: u32) -> i32 {
     let path_buf = PathBuf::from(path_str);
 
     let mut proc = get_or_init_proc();
+    let proc = proc.as_mut().unwrap();
 
-    let should_create = flags & O_CREAT == O_CREAT;
-    let should_truncate = flags & O_TRUNC == O_TRUNC;
-    let append_mode = flags & O_APPEND == O_APPEND;
+    let should_create = (flags & O_CREAT) == O_CREAT;
+    let should_truncate = (flags & O_TRUNC) == O_TRUNC;
+    let append_mode = (flags & O_APPEND) == O_APPEND;
 
-    let inode = if let Some(inode) = proc.as_mut().unwrap().fs.inodes.iter().find(|inode| {
-        FileSystem::construct_path(&File {
-            inode: inode.number,
-            data: vec![],
-            position: 0,
-        }) == path_buf
-    }) {
-        inode.clone()
+    let inode_number = if let Some(inode_num) = proc.fs.lookup_inode_by_path(&path_buf) {
+        // File exists
+        inode_num
     } else if should_create {
-        let new_inode = Inode::new(
-            proc.as_mut().unwrap().fs.next_inode_number,
-            0,
-            Permissions::from(mode as u16),
-            0, // user_id
-            0, // group_id
-            0, // ctime
-            0, // mtime
-            0, // atime
-            InodeKind::File,
-        );
-        proc.as_mut().unwrap().fs.inodes.push(new_inode.clone());
-        proc.as_mut().unwrap().fs.next_inode_number += 1;
-        new_inode
+        // Create a new file
+        proc.fs.create_file(&path_buf, mode)
     } else {
-        return -1; // File not found, and O_CREAT not set
+        return -1; // File not found and O_CREAT not set
     };
 
+    // Truncate if requested
     if should_truncate {
-        inode.size = 0;
+        if let Some(data) = proc.fs.files.get_mut(&inode_number) {
+            data.clear();
+        }
+    } else {
+        // Ensure file data exists
+        if !proc.fs.files.contains_key(&inode_number) {
+            proc.fs.files.insert(inode_number, vec![]);
+        }
     }
 
-    // Find the next available file descriptor
-    let fd = proc.as_mut().unwrap().allocate_fd();
-    if let Some(fd) = fd {
-        proc.as_mut().unwrap().fd_table[fd as usize] = Some(inode);
-        fd
-    } else {
-        -1 // No available file descriptor
-    }
+    // Allocate FD
+    let fd = proc.allocate_fd();
+    let fd = match fd {
+        Some(fd) => fd,
+        None => return -1,
+    };
+
+    proc.fd_table[fd as usize] = Some(inode_number);
+    proc.open_files.insert(
+        fd,
+        OpenFileHandle {
+            inode_number,
+            position: if append_mode {
+                proc.fs.files.get(&inode_number).unwrap().len() as u64
+            } else {
+                0
+            },
+            append_mode,
+        },
+    );
+
+    fd
 }
 
 #[no_mangle]
@@ -165,10 +160,11 @@ pub extern "C" fn close(fd: i32) -> i32 {
     let proc = proc.as_mut().unwrap();
 
     if (fd as usize) < proc.fd_table.len() && proc.fd_table[fd as usize].is_some() {
-        proc.fd_table[fd as usize] = None; // Clear the file descriptor slot
-        0 // Success
+        proc.fd_table[fd as usize] = None;
+        proc.open_files.remove(&fd);
+        0
     } else {
-        -1 // Invalid file descriptor
+        -1
     }
 }
 
@@ -178,40 +174,73 @@ pub extern "C" fn creat(path: *const i8, mode: u32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn openat(dirfd: i32, pathname: *const i8, flags: i32, mode: u32) -> i32 {
+pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
-    let base_path = if dirfd == libc::AT_FDCWD {
-        proc.fs.current_directory.clone()
-    } else if (dirfd as usize) < proc.fd_table.len() {
-        if let Some(inode) = &proc.fd_table[dirfd as usize] {
-            if let InodeKind::Directory = inode.kind {
-                FileSystem::construct_path(&File {
-                    inode: inode.number,
-                    data: vec![],
-                    position: 0,
-                })
-            } else {
-                return -1; // Not a directory
-            }
-        } else {
-            return -1; // Invalid file descriptor
-        }
-    } else {
-        return -1; // Invalid file descriptor
+    let handle = match proc.open_files.get_mut(&fd) {
+        Some(h) => h,
+        None => return -1,
     };
 
-    let path_str = unsafe { CStr::from_ptr(pathname).to_string_lossy().into_owned() };
-    let full_path = base_path.join(path_str);
+    let data = match proc.fs.files.get(&handle.inode_number) {
+        Some(d) => d,
+        None => return -1,
+    };
 
-    open(
-        CString::new(full_path.to_string_lossy().into_owned())
-            .unwrap()
-            .as_ptr(),
-        flags,
-        mode,
-    )
+    let position = handle.position as usize;
+    if position >= data.len() {
+        return 0; // EOF
+    }
+
+    let to_read = cmp::min(count, data.len() - position);
+    unsafe {
+        std::ptr::copy_nonoverlapping(data.as_ptr().add(position), buf, to_read);
+    }
+
+    handle.position += to_read as u64;
+    to_read as isize
+}
+
+#[no_mangle]
+pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
+    let mut proc = get_or_init_proc();
+    let proc = proc.as_mut().unwrap();
+
+    let handle = match proc.open_files.get_mut(&fd) {
+        Some(h) => h,
+        None => return -1,
+    };
+
+    let data = proc.fs.files.get_mut(&handle.inode_number).unwrap();
+
+    if handle.append_mode {
+        handle.position = data.len() as u64;
+    }
+
+    let position = handle.position as usize;
+
+    if position + count > data.len() {
+        data.resize(position + count, 0);
+    }
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(buf, data.as_mut_ptr().add(position), count);
+    }
+
+    handle.position += count as u64;
+
+    // Update inode size
+    if let Some(inode) = proc.fs.inodes.get_mut(handle.inode_number as usize) {
+        inode.size = data.len() as u64;
+    }
+
+    count as isize
+}
+
+#[no_mangle]
+pub extern "C" fn openat(_dirfd: i32, pathname: *const i8, flags: i32, mode: u32) -> i32 {
+    open(pathname, flags, mode)
 }
 
 #[no_mangle]
@@ -220,15 +249,22 @@ pub extern "C" fn dup(oldfd: i32) -> i32 {
     let proc = proc.as_mut().unwrap();
 
     if (oldfd as usize) < proc.fd_table.len() {
-        if let Some(inode) = &proc.fd_table[oldfd as usize] {
-            let new_fd = proc.allocate_fd();
-            if let Some(new_fd) = new_fd {
-                proc.fd_table[new_fd as usize] = Some(inode.clone());
-                return new_fd;
+        if let Some(inode_number) = proc.fd_table[oldfd as usize] {
+            if let Some(old_handle) = proc.open_files.get(&oldfd) {
+                if let Some(new_fd) = proc.allocate_fd() {
+                    proc.fd_table[new_fd as usize] = Some(inode_number);
+                    let new_handle = OpenFileHandle {
+                        inode_number: old_handle.inode_number,
+                        position: old_handle.position,
+                        append_mode: old_handle.append_mode,
+                    };
+                    proc.open_files.insert(new_fd, new_handle);
+                    return new_fd;
+                }
             }
         }
     }
-    -1 // Invalid oldfd or no available new file descriptor
+    -1
 }
 
 #[no_mangle]
@@ -237,13 +273,33 @@ pub extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
     let proc = proc.as_mut().unwrap();
 
     if (oldfd as usize) < proc.fd_table.len() && (newfd as usize) < proc.fd_table.len() {
-        if let Some(inode) = &proc.fd_table[oldfd as usize] {
-            proc.fd_table[newfd as usize] = Some(inode.clone());
+        if let Some(inode_number) = proc.fd_table[oldfd as usize] {
+            if oldfd == newfd {
+                return newfd;
+            }
+
+            if proc.fd_table[newfd as usize].is_some() {
+                proc.fd_table[newfd as usize] = None;
+                proc.open_files.remove(&newfd);
+            }
+
+            proc.fd_table[newfd as usize] = Some(inode_number);
+
+            if let Some(old_handle) = proc.open_files.get(&oldfd) {
+                let new_handle = OpenFileHandle {
+                    inode_number: old_handle.inode_number,
+                    position: old_handle.position,
+                    append_mode: old_handle.append_mode,
+                };
+                proc.open_files.insert(newfd, new_handle);
+            }
+
             return newfd;
         }
     }
-    -1 // Invalid oldfd or newfd
+    -1
 }
+
 
 #[repr(C)]
 struct Dirent {
@@ -253,16 +309,6 @@ struct Dirent {
 #[repr(C)]
 struct Dirent64 {
     // ... dirent64 structure fields ...
-}
-
-#[no_mangle]
-pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
-    unimplemented!()
-}
-
-#[no_mangle]
-pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
-    unimplemented!()
 }
 
 #[no_mangle]
