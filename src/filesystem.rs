@@ -2,6 +2,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
 
+// In a unix filesystems, the field below would likely
+// be an i_block, with one or more pointers to the actual
+// blocks where the data is stored. This is easier/less
+// confusing for our purposes
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize)]
 pub enum InodeKind {
     #[default]
@@ -10,59 +14,18 @@ pub enum InodeKind {
     SymbolicLink(PathBuf),
 }
 
-// In a unix filesystems, the field below would likely
-// be an i_block, with one or more pointers to the actual
-// blocks where the data is stored. This is easier/less
-// confusing for our purposes
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize)]
-pub enum FileKind {
-    #[default]
-    File,
-    DirectoryFile,
-}
-
-#[derive(Eq, Hash, PartialEq, Debug, Clone, Default, Serialize)]
-pub struct Inode {
-    pub number: u64,
-    pub size: u64,
-    pub permissions: Permissions,
-    pub user_id: u32,
-    pub group_id: u32,
-    pub ctime: u64,
-    pub mtime: u64,
-    pub atime: u64,
-    pub kind: InodeKind,
-}
-
-impl Inode {
-    pub fn new(number: u64, size: u64, permissions: Permissions, user_id: u32, group_id: u32,
-        ctime: u64, mtime: u64, atime: u64, kind: InodeKind) -> Self {
-        Inode {
-            number,
-            size,
-            permissions,
-            user_id,
-            group_id,
-            ctime,
-            mtime,
-            atime,
-            kind,
-        }
-    }
-}
-
 #[derive(Debug, Default, PartialEq, Clone, Hash, Eq, Serialize )]
 pub struct Permissions {
-    owner: Permission,
-    group: Permission,
-    other: Permission,
+    pub owner: Permission,
+    pub group: Permission,
+    pub other: Permission,
 }
 
 #[derive(Debug, Default, PartialEq, Clone, Hash, Eq, Serialize)]
 pub struct Permission {
-    read: bool,
-    write: bool,
-    execute: bool,
+    pub read: bool,
+    pub write: bool,
+    pub execute: bool,
 }
 
 impl From<u16> for Permissions {
@@ -87,35 +50,46 @@ impl From<u16> for Permissions {
     }
 }
 
-pub struct Stat {
-    pub st_dev: u64,
-    pub st_ino: u64,
-    pub st_mode: u16,
-    pub st_nlink: u16,
-    pub st_uid: u32,
-    pub st_gid: u32,
-    pub st_rdev: u64,
-    pub st_size: i64,
-    pub st_blksize: i32,
-    pub st_blocks: i64,
-    pub st_atime: i64,
-    pub st_mtime: i64,
-    pub st_ctime: i64,
+#[derive(Eq, Hash, PartialEq, Debug, Clone, Default, Serialize)]
+pub struct Inode {
+    pub number: u64,
+    pub size: u64,
+    pub permissions: Permissions,
+    pub user_id: u32,
+    pub group_id: u32,
+    pub ctime: u64,
+    pub mtime: u64,
+    pub atime: u64,
+    pub kind: InodeKind,
 }
 
+impl Inode {
+    pub fn new(number: u64, size: u64, permissions: Permissions, user_id: u32, group_id: u32,
+               ctime: u64, mtime: u64, atime: u64, kind: InodeKind) -> Self {
+        Inode {
+            number,
+            size,
+            permissions,
+            user_id,
+            group_id,
+            ctime,
+            mtime,
+            atime,
+            kind,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct FileSystem {
-    // In a real FS, `inodes` would be indexed by inode number.
+    // In a linux vfs, `inodes` would be indexed by inode number.
     // We'll ensure that the index in `inodes` matches the inode number:
     // i.e. inode.number == index.
     pub inodes: Vec<Inode>,
     pub next_inode_number: u64,
     pub current_directory: PathBuf,
     pub root_inode: Inode,
-
-    // File data by inode number
     pub files: HashMap<u64, Vec<u8>>,
-
-    // Mapping from full path to inode number
     pub path_map: HashMap<PathBuf, u64>,
 }
 
@@ -175,3 +149,41 @@ impl FileSystem {
         inode_number
     }
 }
+
+// POSIX-like Stat structure
+#[repr(C)]
+pub struct Stat {
+    pub st_dev: u64,
+    pub st_ino: u64,
+    pub st_mode: u32,
+    pub st_nlink: u32,
+    pub st_uid: u32,
+    pub st_gid: u32,
+    pub st_rdev: u64,
+    pub st_size: i64,
+    pub st_blksize: i64,
+    pub st_blocks: i64,
+    pub st_atime: i64,
+    pub st_mtime: i64,
+    pub st_ctime: i64,
+}
+
+// Linux-like dirent structures for getdents calls
+#[repr(C)]
+pub struct Dirent {
+    pub d_ino: u64,
+    pub d_off: i64,
+    pub d_reclen: u16,
+    pub d_type: u8,
+    pub d_name: [u8; 256],
+}
+
+#[repr(C)]
+pub struct Dirent64 {
+    pub d_ino: u64,
+    pub d_off: i64,
+    pub d_reclen: u16,
+    pub d_type: u8,
+    pub d_name: [u8; 256],
+}
+
