@@ -1,8 +1,11 @@
 use std::ffi::{CStr, CString};
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use std::collections::HashMap;
 use lazy_static::lazy_static;
-use crate::filesystem::*;
+use crate::filesystem::{
+    FileSystem, Inode, InodeKind, Permissions, Permission, Stat, Dirent, Dirent64
+};
 use std::cmp;
 
 pub type FileDescriptor = i32;
@@ -13,42 +16,37 @@ struct OpenFileHandle {
     append_mode: bool,
 }
 
--// TODO - proc will be its own lib, used here and with /net stuff, for unix Process mgmt stuff, etc
--//
--// EAch named thing is a separate Wasm module:
--//
--//
--//                     pkc
--//                     /|\
--//                    / | \
--
--//
--// VFS --- Proc --- Net        ...
--//   \      |      /
--//    \     |     /
--//         libc
--//          |     (else: Interfaces to
--//          |     devices, user
--//          |     input, etc.)
--//          |
--//      User program
--//
--// -------------------
- //
+// Flags
+const O_RDONLY: i32 = 0;
+const O_WRONLY: i32 = 1;
+const O_RDWR: i32 = 2;
+const O_CREAT: i32 = 64;
+const O_TRUNC: i32 = 512;
+const O_APPEND: i32 = 1024;
 
+const SEEK_SET: i32 = 0;
+const SEEK_CUR: i32 = 1;
+const SEEK_END: i32 = 2;
+
+// Mode checks for access()
+const R_OK: i32 = 4;
+const W_OK: i32 = 2;
+const X_OK: i32 = 1;
+
+// TODO - proc will be its own lib, used here and with /net stuff, for unix Process mgmt stuff, etc
 -// Proc is intended to be instantiated from a separate Wasm module
 -// however it can be used local to this module if not sharing with
 -// other externel resource modules (wasm-net, etc.). This is an option.
--//
-
 pub struct Proc {
     pub fs: FileSystem,
 
     // Instead of storing Inode here, we just store the inode number.
     // In a real FS, the inode number acts like an index; we can always reference fs.inodes.
+    // (change this?)
     fd_table: [Option<u64>; 1024],
     open_files: std::collections::HashMap<FileDescriptor, OpenFileHandle>,
     next_fd: FileDescriptor,
+    umask_value: u32,
 }
 
 impl Proc {
@@ -56,8 +54,9 @@ impl Proc {
         Self {
             fs: FileSystem::new(),
             fd_table: [None; 1024],
-            open_files: std::collections::HashMap::new(),
+            open_files: HashMap::new(),
             next_fd: 3,
+            umask_value: 0o022,
         }
     }
 
@@ -69,6 +68,80 @@ impl Proc {
             }
         }
         None
+    }
+
+    fn get_absolute_path(&self, path: &PathBuf) -> PathBuf {
+        if path.is_absolute() {
+            path.clone()
+        } else {
+            self.fs.current_directory.join(path)
+        }
+    }
+
+    fn get_inode_mut(&mut self, inode_num: u64) -> Option<&mut Inode> {
+        self.fs.inodes.get_mut(inode_num as usize)
+    }
+
+    fn get_inode(&self, inode_num: u64) -> Option<&Inode> {
+        self.fs.inodes.get(inode_num as usize)
+    }
+
+    fn set_file_size(&mut self, inode_number: u64, new_size: usize) {
+        if let Some(data) = self.fs.files.get_mut(&inode_number) {
+            if data.len() > new_size {
+                data.truncate(new_size);
+            } else if data.len() < new_size {
+                data.resize(new_size, 0);
+            }
+            if let Some(inode) = self.get_inode_mut(inode_number) {
+                inode.size = data.len() as u64;
+            }
+        }
+    }
+
+    fn check_access(&self, inode: &Inode, mode: i32) -> bool {
+        // For simplicity, we assume root.
+        let perm = &inode.permissions;
+        let p = &perm.owner;
+        let can_read = p.read;
+        let can_write = p.write;
+        let can_exec = p.execute;
+
+        if (mode & R_OK) != 0 && !can_read {
+            return false;
+        }
+        if (mode & W_OK) != 0 && !can_write {
+            return false;
+        }
+        if (mode & X_OK) != 0 && !can_exec {
+            return false;
+        }
+
+        true
+    }
+
+    fn insert_directory_entry(&mut self, path: &PathBuf, inode_number: u64, kind: InodeKind) {
+        let inode = Inode::new(
+            inode_number,
+            0,
+            Permissions::from((0o777 & !self.umask_value) as u16),
+            0,
+            0,
+            0,
+            0,
+            0,
+            kind,
+        );
+        while self.fs.inodes.len() <= inode_number as usize {
+            self.fs.inodes.push(Inode::default());
+        }
+        self.fs.inodes[inode_number as usize] = inode.clone();
+        self.fs.path_map.insert(path.clone(), inode_number);
+        if let InodeKind::Directory = inode.kind {
+            self.fs.files.insert(inode_number, vec![]);
+        } else if let InodeKind::File = inode.kind {
+            self.fs.files.insert(inode_number, vec![]);
+        }
     }
 }
 
@@ -84,12 +157,54 @@ fn get_or_init_proc() -> MutexGuard<'static, Option<Proc>> {
     proc
 }
 
-const O_RDONLY: i32 = 0;
-const O_WRONLY: i32 = 1;
-const O_RDWR: i32 = 2;
-const O_CREAT: i32 = 64;
-const O_TRUNC: i32 = 512;
-const O_APPEND: i32 = 1024;
+// convert InodeKind to a dirent d_type
+fn inode_kind_to_dtype(kind: &InodeKind) -> u8 {
+    match kind {
+        InodeKind::File => 8,         // DT_REG
+        InodeKind::Directory => 4,    // DT_DIR
+        InodeKind::SymbolicLink(_) => 10, // DT_LNK
+    }
+}
+
+fn fill_stat_from_inode(inode: &Inode, statbuf: *mut Stat) {
+    let mode_type = match inode.kind {
+        InodeKind::File => 0o100000,       // regular file
+        InodeKind::Directory => 0o040000,  // directory
+        InodeKind::SymbolicLink(_) => 0o120000, // symlink
+    };
+    let perms = &inode.permissions;
+    let mut mode_perms = 0;
+    // owner
+    if perms.owner.read { mode_perms |= 0o400; }
+    if perms.owner.write { mode_perms |= 0o200; }
+    if perms.owner.execute { mode_perms |= 0o100; }
+    // group
+    if perms.group.read { mode_perms |= 0o040; }
+    if perms.group.write { mode_perms |= 0o020; }
+    if perms.group.execute { mode_perms |= 0o010; }
+    // other
+    if perms.other.read { mode_perms |= 0o004; }
+    if perms.other.write { mode_perms |= 0o002; }
+    if perms.other.execute { mode_perms |= 0o001; }
+
+    let st_mode = mode_type | mode_perms;
+
+    unsafe {
+        (*statbuf).st_dev = 0;
+        (*statbuf).st_ino = inode.number;
+        (*statbuf).st_mode = st_mode;
+        (*statbuf).st_nlink = 1;
+        (*statbuf).st_uid = inode.user_id;
+        (*statbuf).st_gid = inode.group_id;
+        (*statbuf).st_rdev = 0;
+        (*statbuf).st_size = inode.size as i64;
+        (*statbuf).st_blksize = 4096;
+        (*statbuf).st_blocks = (inode.size as i64 + 511)/512;
+        (*statbuf).st_atime = inode.atime as i64;
+        (*statbuf).st_mtime = inode.mtime as i64;
+        (*statbuf).st_ctime = inode.ctime as i64;
+    }
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn init_proc(_size: u32) -> *const u8 {
