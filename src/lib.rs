@@ -1,8 +1,8 @@
+#![allow(warnings)]
 extern crate core;
 
 mod filesystem;
-mod process;
-mod init;
+mod system;
 
-pub use filesystem::{FileSystem, File, Inode, InodeKind, OpenFile, Permissions, DirectoryEntry};
-pub use process::Process;
+pub use filesystem::{FileSystem, Inode, InodeKind, Permissions};
+pub use system::Proc;

@@ -34,9 +34,9 @@ const W_OK: i32 = 2;
 const X_OK: i32 = 1;
 
 // TODO - proc will be its own lib, used here and with /net stuff, for unix Process mgmt stuff, etc
--// Proc is intended to be instantiated from a separate Wasm module
--// however it can be used local to this module if not sharing with
--// other externel resource modules (wasm-net, etc.). This is an option.
+// Proc is intended to be instantiated from a separate Wasm module
+// however it can be used local to this module if not sharing with
+// other externel resource modules (wasm-net, etc.). This is an option.
 pub struct Proc {
     pub fs: FileSystem,
 
@@ -93,15 +93,21 @@ impl Proc {
     }
 
     fn set_file_size(&mut self, inode_number: u64, new_size: usize) {
-        if let Some(data) = self.fs.files.get_mut(&inode_number) {
-            if data.len() > new_size {
-                data.truncate(new_size);
-            } else if data.len() < new_size {
-                data.resize(new_size, 0);
+        let new_len = {
+            if let Some(data) = self.fs.files.get_mut(&inode_number) {
+                if data.len() > new_size {
+                    data.truncate(new_size);
+                } else if data.len() < new_size {
+                    data.resize(new_size, 0);
+                }
+                data.len()
+            } else {
+                0
             }
-            if let Some(inode) = self.get_inode_mut(inode_number) {
-                inode.size = data.len() as u64;
-            }
+        };
+
+        if let Some(inode) = self.get_inode_mut(inode_number) {
+            inode.size = new_len as u64;
         }
     }
 
@@ -163,7 +169,6 @@ fn get_or_init_proc() -> MutexGuard<'static, Option<Proc>> {
     proc
 }
 
-// convert InodeKind to a dirent d_type
 fn inode_kind_to_dtype(kind: &InodeKind) -> u8 {
     match kind {
         InodeKind::File => 8,         // DT_REG
@@ -230,28 +235,24 @@ pub extern "C" fn open(path: *const i8, flags: i32, mode: u32) -> i32 {
     let append_mode = (flags & O_APPEND) == O_APPEND;
 
     let inode_number = if let Some(inode_num) = proc.fs.lookup_inode_by_path(&path_buf) {
-        // File exists
         inode_num
     } else if should_create {
-        // Create a new file
         proc.fs.create_file(&path_buf, mode)
     } else {
-        return -1; // File not found and O_CREAT not set
+        return -1;
     };
 
-    // Truncate if requested
+
     if should_truncate {
         if let Some(data) = proc.fs.files.get_mut(&inode_number) {
             data.clear();
         }
     } else {
-        // Ensure file data exists
         if !proc.fs.files.contains_key(&inode_number) {
             proc.fs.files.insert(inode_number, vec![]);
         }
     }
 
-    // Allocate FD
     let fd = proc.allocate_fd();
     let fd = match fd {
         Some(fd) => fd,
@@ -371,17 +372,23 @@ pub extern "C" fn dup(oldfd: i32) -> i32 {
 
     if (oldfd as usize) < proc.fd_table.len() {
         if let Some(inode_number) = proc.fd_table[oldfd as usize] {
-            if let Some(old_handle) = proc.open_files.get(&oldfd) {
-                if let Some(new_fd) = proc.allocate_fd() {
-                    proc.fd_table[new_fd as usize] = Some(inode_number);
-                    let new_handle = OpenFileHandle {
-                        inode_number: old_handle.inode_number,
-                        position: old_handle.position,
-                        append_mode: old_handle.append_mode,
-                    };
-                    proc.open_files.insert(new_fd, new_handle);
-                    return new_fd;
-                }
+            let (inode_number, position, append_mode) = {
+                let old_handle = match proc.open_files.get(&oldfd) {
+                    Some(h) => h,
+                    None => return -1,
+                };
+                (old_handle.inode_number, old_handle.position, old_handle.append_mode)
+            };
+
+            if let Some(new_fd) = proc.allocate_fd() {
+                proc.fd_table[new_fd as usize] = Some(inode_number);
+                let new_handle = OpenFileHandle {
+                    inode_number,
+                    position,
+                    append_mode,
+                };
+                proc.open_files.insert(new_fd, new_handle);
+                return new_fd;
             }
         }
     }
@@ -474,64 +481,84 @@ pub extern "C" fn pwrite64(fd: i32, buf: *const u8, count: usize, offset: i64) -
 
 #[no_mangle]
 pub extern "C" fn sendfile(out_fd: i32, in_fd: i32, offset: *mut i64, count: usize) -> isize {
-    // sendfile copies data from in_fd to out_fd
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
-    let in_handle = match proc.open_files.get_mut(&in_fd) {
-        Some(h) => h,
-        None => return -1,
+
+    let (in_inode_number, in_position, in_append_mode) = {
+        let in_handle = match proc.open_files.get(&in_fd) {
+            Some(h) => h,
+            None => return -1,
+        };
+        (in_handle.inode_number, in_handle.position, in_handle.append_mode)
     };
 
-    let out_handle = match proc.open_files.get_mut(&out_fd) {
-        Some(h) => h,
-        None => return -1,
+    let (out_inode_number, out_position, out_append_mode) = {
+        let out_handle = match proc.open_files.get(&out_fd) {
+            Some(h) => h,
+            None => return -1,
+        };
+        (out_handle.inode_number, out_handle.position, out_handle.append_mode)
     };
 
-    let in_data = proc.fs.files.get(&in_handle.inode_number).unwrap().clone();
+    let in_data = proc.fs.files.get(&in_inode_number).unwrap().clone();
 
     let mut read_pos = if !offset.is_null() {
         unsafe { *offset as usize }
     } else {
-        in_handle.position as usize
+        in_position as usize
     };
 
     if read_pos >= in_data.len() {
         return 0;
     }
 
-    let to_copy = cmp::min(count, in_data.len() - read_pos);
+    let to_copy = std::cmp::min(count, in_data.len() - read_pos);
 
-    let out_data = proc.fs.files.get_mut(&out_handle.inode_number).unwrap();
-    let out_pos = if out_handle.append_mode {
-        out_data.len()
-    } else {
-        out_handle.position as usize
-    };
 
-    if out_pos + to_copy > out_data.len() {
-        out_data.resize(out_pos + to_copy, 0);
-    }
+    {
+        let out_data = proc.fs.files.get_mut(&out_inode_number).unwrap();
+        let out_pos = if out_append_mode {
+            out_data.len()
+        } else {
+            out_position as usize
+        };
 
-    out_data[out_pos..out_pos+to_copy].copy_from_slice(&in_data[read_pos..read_pos+to_copy]);
-
-    // Update positions
-    if !offset.is_null() {
-        unsafe {
-            *offset += to_copy as i64;
+        if out_pos + to_copy > out_data.len() {
+            out_data.resize(out_pos + to_copy, 0);
         }
-    } else {
-        in_handle.position += to_copy as u64;
-    }
 
-    if out_handle.append_mode {
-        out_handle.position = out_data.len() as u64;
-    } else {
-        out_handle.position += to_copy as u64;
-    }
+        out_data[out_pos..out_pos+to_copy].copy_from_slice(&in_data[read_pos..read_pos+to_copy]);
 
-    if let Some(out_inode) = proc.get_inode_mut(out_handle.inode_number) {
-        out_inode.size = out_data.len() as u64;
+
+        if !offset.is_null() {
+            unsafe {
+                *offset += to_copy as i64;
+            }
+        } else {
+            if let Some(in_handle_mut) = proc.open_files.get_mut(&in_fd) {
+                in_handle_mut.position = in_position + to_copy as u64;
+            }
+        }
+
+
+        if let Some(out_handle_mut) = proc.open_files.get_mut(&out_fd) {
+            if out_append_mode {
+                out_handle_mut.position = out_data.len() as u64;
+            } else {
+                out_handle_mut.position = out_position + to_copy as u64;
+            }
+        }
+
+
+        let new_size = out_data.len();
+
+        drop(out_data);
+
+
+        if let Some(out_inode) = proc.get_inode_mut(out_inode_number) {
+            out_inode.size = new_size as u64;
+        }
     }
 
     to_copy as isize
@@ -544,75 +571,79 @@ pub extern "C" fn sendfile64(out_fd: i32, in_fd: i32, offset: *mut i64, count: u
 
 #[no_mangle]
 pub extern "C" fn splice(fd_in: i32, off_in: *mut i64, fd_out: i32, off_out: *mut i64, len: usize, _flags: u32) -> isize {
-    // emulate splice as a copy similar to sendfile
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
-    let in_handle = match proc.open_files.get(&fd_in) {
-        Some(h) => h,
-        None => return -1,
+    let (in_inode_number, in_position, in_append_mode) = {
+        let in_handle = proc.open_files.get(&fd_in).ok_or(-1).unwrap();
+        (in_handle.inode_number, in_handle.position, in_handle.append_mode)
     };
 
-    let out_handle = match proc.open_files.get_mut(&fd_out) {
-        Some(h) => h,
-        None => return -1,
+    let (out_inode_number, out_position, out_append_mode) = {
+        let out_handle = proc.open_files.get(&fd_out).ok_or(-1).unwrap();
+        (out_handle.inode_number, out_handle.position, out_handle.append_mode)
     };
 
-    let in_data = proc.fs.files.get(&in_handle.inode_number).unwrap().clone();
+    let in_data = proc.fs.files.get(&in_inode_number).unwrap().clone();
 
     let mut in_pos = if !off_in.is_null() {
         unsafe { *off_in as usize }
     } else {
-        in_handle.position as usize
+        in_position as usize
     };
 
     if in_pos >= in_data.len() {
         return 0;
     }
 
-    let to_copy = cmp::min(len, in_data.len() - in_pos);
+    let to_copy = std::cmp::min(len, in_data.len() - in_pos);
 
-    let out_data = proc.fs.files.get_mut(&out_handle.inode_number).unwrap();
-    let mut out_pos = if !off_out.is_null() {
-        unsafe { *off_out as usize }
-    } else if out_handle.append_mode {
-        out_data.len()
-    } else {
-        out_handle.position as usize
-    };
-
-    if out_pos + to_copy > out_data.len() {
-        out_data.resize(out_pos + to_copy, 0);
-    }
-
-    out_data[out_pos..out_pos+to_copy].copy_from_slice(&in_data[in_pos..in_pos+to_copy]);
-
-    if !off_in.is_null() {
-        unsafe {
-            *off_in += to_copy as i64;
-        }
-    } else {
-        // update in pos if not direct offset
-        let mut_ref = &mut (proc.open_files.get_mut(&fd_in).unwrap().position);
-        *mut_ref += to_copy as u64;
-    }
-
-    if !off_out.is_null() {
-        unsafe {
-            *off_out += to_copy as i64;
-        }
-    } else {
-        // update out pos
-        let mut_ref = &mut (proc.open_files.get_mut(&fd_out).unwrap().position);
-        if out_handle.append_mode {
-            *mut_ref = out_data.len() as u64;
+    {
+        let out_data = proc.fs.files.get_mut(&out_inode_number).unwrap();
+        let mut out_pos = if !off_out.is_null() {
+            unsafe { *off_out as usize }
+        } else if out_append_mode {
+            out_data.len()
         } else {
-            *mut_ref += to_copy as u64;
-        }
-    }
+            out_position as usize
+        };
 
-    if let Some(out_inode) = proc.get_inode_mut(out_handle.inode_number) {
-        out_inode.size = out_data.len() as u64;
+        if out_pos + to_copy > out_data.len() {
+            out_data.resize(out_pos + to_copy, 0);
+        }
+
+        out_data[out_pos..out_pos+to_copy].copy_from_slice(&in_data[in_pos..in_pos+to_copy]);
+
+        if !off_in.is_null() {
+            unsafe {
+                *off_in += to_copy as i64;
+            }
+        } else {
+            if let Some(in_handle_mut) = proc.open_files.get_mut(&fd_in) {
+                in_handle_mut.position = in_position + to_copy as u64;
+            }
+        }
+
+        if !off_out.is_null() {
+            unsafe {
+                *off_out += to_copy as i64;
+            }
+        } else {
+            if let Some(out_handle_mut) = proc.open_files.get_mut(&fd_out) {
+                if out_append_mode {
+                    out_handle_mut.position = out_data.len() as u64;
+                } else {
+                    out_handle_mut.position = out_position + to_copy as u64;
+                }
+            }
+        }
+
+        let new_size = out_data.len();
+        drop(out_data);
+
+        if let Some(out_inode) = proc.get_inode_mut(out_inode_number) {
+            out_inode.size = new_size as u64;
+        }
     }
 
     to_copy as isize
@@ -623,49 +654,54 @@ pub extern "C" fn getdents(fd: i32, dirp: *mut Dirent, count: usize) -> isize {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
-    // getdents reads directory entries from a directory fd
-    let handle = match proc.open_files.get_mut(&fd) {
-        Some(h) => h,
-        None => return -1,
+
+    let inode_number = {
+        let handle = match proc.open_files.get_mut(&fd) {
+            Some(h) => h,
+            None => return -1,
+        };
+        let ino = handle.inode_number;
+        ino
     };
 
-    let inode = match proc.get_inode(handle.inode_number) {
+    let inode = match proc.get_inode(inode_number) {
         Some(i) => i,
         None => return -1,
     };
 
-    // Ensure it's a directory
     if let InodeKind::Directory = inode.kind {
+
     } else {
         return -1;
     }
 
-    // We'll simulate directory entries by enumerating all paths that start with this directory
+    let dir_prefix = if inode.number == 0 {
+        PathBuf::from("/")
+    } else {
+        proc.fs.path_map.iter()
+            .find_map(|(pp, ino)| if *ino == inode.number { Some(pp.clone()) } else { None })
+            .unwrap_or(PathBuf::from("/"))
+    };
+
     let dir_path = proc.fs.path_map.iter().filter(|(p, _)| {
-        // directory entries are those that are direct children of the dir
-        let dir_prefix = if inode.number == 0 {
-            PathBuf::from("/")
-        } else {
-            // find path by inode
-            proc.fs.path_map.iter().find_map(|(pp, ino)| if *ino == inode.number {Some(pp.clone())} else {None}).unwrap_or(PathBuf::from("/"))
-        };
-        if *p == dir_prefix {
-            // this is the directory itself
+        if p.as_path() == dir_prefix.as_path() {
             false
         } else {
-            if let Some(parent) = p.parent() {
-                parent == dir_prefix
-            } else {
-                false
-            }
+            p.parent().map(|pp| pp == dir_prefix).unwrap_or(false)
         }
     });
 
-    // handle.position as a directory offset
     let entries: Vec<(PathBuf, u64)> = dir_path.map(|(p,i)| (p.clone(), *i)).collect();
-    let start = handle.position as usize;
+
+
+    let position = {
+        let handle = proc.open_files.get_mut(&fd).unwrap();
+        handle.position
+    };
+
+    let start = position as usize;
     if start >= entries.len() {
-        return 0; // no more entries
+        return 0;
     }
 
     let mut written = 0;
@@ -674,17 +710,17 @@ pub extern "C" fn getdents(fd: i32, dirp: *mut Dirent, count: usize) -> isize {
     for (path, ino) in entries.iter().skip(start) {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         let d_type = inode_kind_to_dtype(&proc.get_inode(*ino).unwrap().kind);
+
         let mut d: Dirent = Dirent {
             d_ino: *ino,
-            d_off: (handle.position + 1) as i64,
-            d_reclen: 0, // will set after
+            d_off: (position + 1) as i64,
+            d_reclen: 0,
             d_type,
             d_name: [0;256],
         };
 
         let bytes = name.as_bytes();
         if bytes.len() >= 256 {
-            // name too long
             continue;
         }
         d.d_name[..bytes.len()].copy_from_slice(bytes);
@@ -700,7 +736,12 @@ pub extern "C" fn getdents(fd: i32, dirp: *mut Dirent, count: usize) -> isize {
         }
         written += record_len;
         dirp_ptr = unsafe { dirp_ptr.add(record_len) };
-        handle.position += 1;
+
+
+        {
+            let handle = proc.open_files.get_mut(&fd).unwrap();
+            handle.position += 1;
+        }
     }
 
     written as isize
@@ -708,14 +749,14 @@ pub extern "C" fn getdents(fd: i32, dirp: *mut Dirent, count: usize) -> isize {
 
 #[no_mangle]
 pub extern "C" fn getdents64(fd: i32, dirp: *mut Dirent64, count: usize) -> isize {
-    // We'll just reuse getdents and cast
+
     let mut buf = vec![0u8; count];
     let ret = getdents(fd, buf.as_mut_ptr() as *mut Dirent, count);
     if ret <= 0 {
         return ret;
     }
 
-    // Convert Dirent to Dirent64 (they are the same in this simplified scenario)
+
     let used = ret as usize;
     unsafe {
         std::ptr::copy_nonoverlapping(buf.as_ptr(), dirp as *mut u8, used);
@@ -739,9 +780,9 @@ pub extern "C" fn lseek(fd: i32, offset: i64, whence: i32) -> i64 {
     };
 
     let new_pos = match whence {
-        SEEK_SET => offset,
-        SEEK_CUR => handle.position as i64 + offset,
-        SEEK_END => size + offset,
+        seek_set => offset,
+        seek_cur => handle.position as i64 + offset,
+        seek_end => size + offset,
         _ => return -1,
     };
 
@@ -788,7 +829,7 @@ pub extern "C" fn fstat(fd: i32, statbuf: *mut Stat) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn lstat(path: *const i8, statbuf: *mut Stat) -> i32 {
-    // For simplicity same as stat since we don't have special link-handling difference
+    // for simplicity same as stat since we don't have special link-handling difference
     stat(path, statbuf)
 }
 
@@ -1003,9 +1044,9 @@ pub extern "C" fn rename(oldpath: *const i8, newpath: *const i8) -> i32 {
         None => return -1,
     };
 
-    // remove old
+
     proc.fs.path_map.remove(&old_abs);
-    // insert new
+
     proc.fs.path_map.insert(new_abs, inode_num);
     0
 }
@@ -1058,7 +1099,7 @@ pub extern "C" fn unlink(pathname: *const i8) -> i32 {
         None => return -1,
     };
 
-    // If directory, fail
+    // if directory, fail
     let inode = proc.get_inode(inode_num).unwrap();
     if let InodeKind::Directory = inode.kind {
         return -1;
@@ -1110,13 +1151,14 @@ pub extern "C" fn readlink(path: *const i8, buf: *mut i8, bufsize: usize) -> isi
     let inode = proc.get_inode(inode_num).unwrap();
     match &inode.kind {
         InodeKind::SymbolicLink(t) => {
-            let bytes = t.to_string_lossy().as_bytes();
+            let loss = t.to_string_lossy();
+            let bytes = loss.as_bytes();
             let to_copy = cmp::min(bytes.len(), bufsize);
             unsafe {
                 std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, to_copy);
             }
             to_copy as isize
-        },
+        }
         _ => -1,
     }
 }
@@ -1136,7 +1178,7 @@ pub extern "C" fn mkdir(path: *const i8, mode: u32) -> i32 {
     let abs_path = proc.get_absolute_path(&PathBuf::from(path_str));
 
     if proc.fs.lookup_inode_by_path(&abs_path).is_some() {
-        return -1; // already exists
+        return -1;
     }
 
     let inode_number = proc.fs.next_inode_number;
@@ -1171,12 +1213,12 @@ pub extern "C" fn rmdir(path: *const i8) -> i32 {
     let inode = proc.get_inode(inode_num).unwrap();
     match inode.kind {
         InodeKind::Directory => {
-            // Check if directory is empty
+
             let entries = proc.fs.path_map.iter().filter(|(p,_)| {
                 p.parent().map(|pp| pp == abs_path).unwrap_or(false)
             }).count();
             if entries > 0 {
-                return -1; // not empty
+                return -1;
             }
             proc.fs.path_map.remove(&abs_path);
             0
@@ -1221,10 +1263,10 @@ pub extern "C" fn ftruncate(fd: i32, length: i64) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn fallocate(fd: i32, _mode: i32, offset: i64, len: i64) -> i32 {
-    // Just ensure space
     if offset < 0 || len < 0 {
         return -1;
     }
+
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
     let inode_num = match proc.fd_table.get(fd as usize) {
@@ -1233,13 +1275,17 @@ pub extern "C" fn fallocate(fd: i32, _mode: i32, offset: i64, len: i64) -> i32 {
     };
 
     let end = (offset + len) as usize;
-    let data = proc.fs.files.get_mut(&inode_num).unwrap();
-    if data.len() < end {
-        data.resize(end, 0);
+
+    {
+        let data = proc.fs.files.get_mut(&inode_num).unwrap();
+        if data.len() < end {
+            data.resize(end, 0);
+        }
     }
 
+    let new_size = proc.fs.files.get(&inode_num).unwrap().len();
     if let Some(inode) = proc.get_inode_mut(inode_num) {
-        inode.size = data.len() as u64;
+        inode.size = new_size as u64;
     }
 
     0
@@ -1258,7 +1304,7 @@ pub extern "C" fn flock(fd: i32, _operation: i32) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn mmap(_addr: *mut u8, _length: usize, _prot: i32, _flags: i32, _fd: i32, _offset: isize) -> *mut u8 {
-    // Not supported in this in-memory FS
+    // not supported in this in-memory fs
     std::ptr::null_mut()
 }
 
@@ -1332,23 +1378,23 @@ pub extern "C" fn inotify_rm_watch(_fd: i32, _wd: i32) -> i32 {
 }
 
 // -----------------------------------------------------------
-// Helper function to populate/mount a host directory into wasm-vfs
+// helper function to populate/mount a host directory into wasm-vfs
 
 #[cfg(feature = "std")]
-pub fn mount_host_directory(host_path: &Path, mount_path: &Path) -> Result<(), std::io::Error> {
+pub fn mount_host_directory(host_path: &path, mount_path: &path) -> result<(), std::io::error> {
     use std::fs;
-    let mut proc = GLOBAL_PROC.lock().unwrap();
+    let mut proc = global_proc.lock().unwrap();
     if proc.is_none() {
-        *proc = Some(Proc::new());
+        *proc = Some(proc::new());
     }
     let proc = proc.as_mut().unwrap();
 
-    // Recursively copy host_path into in-memory FS at mount_path
-    fn recurse(proc: &mut Proc, host: &Path, vfs_path: &Path) -> std::io::Result<()> {
+    // recursively copy host_path into in-memory fs at mount_path
+    fn recurse(proc: &mut proc, host: &path, vfs_path: &path) -> std::io::result<()> {
         let meta = host.symlink_metadata()?;
         if meta.is_dir() {
             // mkdir
-            if vfs_path != Path::new("/") {
+            if vfs_path != path::new("/") {
                 let inode_number = proc.fs.next_inode_number;
                 proc.fs.next_inode_number += 1;
                 proc.fs.path_map.insert(vfs_path.to_path_buf(), inode_number);
@@ -1389,7 +1435,7 @@ pub fn mount_host_directory(host_path: &Path, mount_path: &Path) -> Result<(), s
                 0,
                 0,
                 0,
-                InodeKind::File
+                InodeKind::file
             );
             while proc.fs.inodes.len() <= inode_number as usize {
                 proc.fs.inodes.push(Inode::default());
