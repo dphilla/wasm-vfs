@@ -218,12 +218,12 @@ fn fill_stat_from_inode(inode: &Inode, statbuf: *mut Stat) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn init_proc(_size: u32) -> *const u8 {
+pub unsafe extern "C" fn wasm_vfs_init_proc(_size: u32) -> *const u8 {
     unimplemented!()
 }
 
 #[no_mangle]
-pub extern "C" fn open(path: *const i8, flags: i32, mode: u32) -> i32 {
+pub extern "C" fn wasm_vfs_open(path: *const i8, flags: i32, mode: u32) -> i32 {
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
     let path_buf = PathBuf::from(path_str);
 
@@ -277,7 +277,7 @@ pub extern "C" fn open(path: *const i8, flags: i32, mode: u32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn close(fd: i32) -> i32 {
+pub extern "C" fn wasm_vfs_close(fd: i32) -> i32 {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
@@ -291,12 +291,12 @@ pub extern "C" fn close(fd: i32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn creat(path: *const i8, mode: u32) -> i32 {
-    open(path, O_WRONLY | O_CREAT | O_TRUNC, mode)
+pub extern "C" fn wasm_vfs_creat(path: *const i8, mode: u32) -> i32 {
+    wasm_vfs_open(path, O_WRONLY | O_CREAT | O_TRUNC, mode)
 }
 
 #[no_mangle]
-pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
+pub extern "C" fn wasm_vfs_read(fd: i32, buf: *mut u8, count: usize) -> isize {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
@@ -325,7 +325,7 @@ pub extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
 }
 
 #[no_mangle]
-pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
+pub extern "C" fn wasm_vfs_write(fd: i32, buf: *const u8, count: usize) -> isize {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
@@ -361,12 +361,12 @@ pub extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
 }
 
 #[no_mangle]
-pub extern "C" fn openat(_dirfd: i32, pathname: *const i8, flags: i32, mode: u32) -> i32 {
-    open(pathname, flags, mode)
+pub extern "C" fn wasm_vfs_openat(_dirfd: i32, pathname: *const i8, flags: i32, mode: u32) -> i32 {
+    wasm_vfs_open(pathname, flags, mode)
 }
 
 #[no_mangle]
-pub extern "C" fn dup(oldfd: i32) -> i32 {
+pub extern "C" fn wasm_vfs_dup(oldfd: i32) -> i32 {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
@@ -396,7 +396,7 @@ pub extern "C" fn dup(oldfd: i32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
+pub extern "C" fn wasm_vfs_dup2(oldfd: i32, newfd: i32) -> i32 {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
@@ -428,7 +428,7 @@ pub extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
     -1
 }
 #[no_mangle]
-pub extern "C" fn pread64(fd: i32, buf: *mut u8, count: usize, offset: i64) -> isize {
+pub extern "C" fn wasm_vfs_pread64(fd: i32, buf: *mut u8, count: usize, offset: i64) -> isize {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
     let handle = match proc.open_files.get(&fd) {
@@ -454,7 +454,7 @@ pub extern "C" fn pread64(fd: i32, buf: *mut u8, count: usize, offset: i64) -> i
 }
 
 #[no_mangle]
-pub extern "C" fn pwrite64(fd: i32, buf: *const u8, count: usize, offset: i64) -> isize {
+pub extern "C" fn wasm_vfs_pwrite64(fd: i32, buf: *const u8, count: usize, offset: i64) -> isize {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
     let handle = match proc.open_files.get(&fd) {
@@ -480,7 +480,7 @@ pub extern "C" fn pwrite64(fd: i32, buf: *const u8, count: usize, offset: i64) -
 }
 
 #[no_mangle]
-pub extern "C" fn sendfile(out_fd: i32, in_fd: i32, offset: *mut i64, count: usize) -> isize {
+pub extern "C" fn wasm_vfs_sendfile(out_fd: i32, in_fd: i32, offset: *mut i64, count: usize) -> isize {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
@@ -565,12 +565,12 @@ pub extern "C" fn sendfile(out_fd: i32, in_fd: i32, offset: *mut i64, count: usi
 }
 
 #[no_mangle]
-pub extern "C" fn sendfile64(out_fd: i32, in_fd: i32, offset: *mut i64, count: usize) -> isize {
-    sendfile(out_fd, in_fd, offset, count)
+pub extern "C" fn wasm_vfs_sendfile64(out_fd: i32, in_fd: i32, offset: *mut i64, count: usize) -> isize {
+    wasm_vfs_sendfile(out_fd, in_fd, offset, count)
 }
 
 #[no_mangle]
-pub extern "C" fn splice(fd_in: i32, off_in: *mut i64, fd_out: i32, off_out: *mut i64, len: usize, _flags: u32) -> isize {
+pub extern "C" fn wasm_vfs_splice(fd_in: i32, off_in: *mut i64, fd_out: i32, off_out: *mut i64, len: usize, _flags: u32) -> isize {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
@@ -650,7 +650,7 @@ pub extern "C" fn splice(fd_in: i32, off_in: *mut i64, fd_out: i32, off_out: *mu
 }
 
 #[no_mangle]
-pub extern "C" fn getdents(fd: i32, dirp: *mut Dirent, count: usize) -> isize {
+pub extern "C" fn wasm_vfs_getdents(fd: i32, dirp: *mut Dirent, count: usize) -> isize {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
@@ -748,10 +748,10 @@ pub extern "C" fn getdents(fd: i32, dirp: *mut Dirent, count: usize) -> isize {
 }
 
 #[no_mangle]
-pub extern "C" fn getdents64(fd: i32, dirp: *mut Dirent64, count: usize) -> isize {
+pub extern "C" fn wasm_vfs_getdents64(fd: i32, dirp: *mut Dirent64, count: usize) -> isize {
 
     let mut buf = vec![0u8; count];
-    let ret = getdents(fd, buf.as_mut_ptr() as *mut Dirent, count);
+    let ret = wasm_vfs_getdents(fd, buf.as_mut_ptr() as *mut Dirent, count);
     if ret <= 0 {
         return ret;
     }
@@ -765,7 +765,7 @@ pub extern "C" fn getdents64(fd: i32, dirp: *mut Dirent64, count: usize) -> isiz
 }
 
 #[no_mangle]
-pub extern "C" fn lseek(fd: i32, offset: i64, whence: i32) -> i64 {
+pub extern "C" fn wasm_vfs_lseek(fd: i32, offset: i64, whence: i32) -> i64 {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
@@ -795,7 +795,7 @@ pub extern "C" fn lseek(fd: i32, offset: i64, whence: i32) -> i64 {
 }
 
 #[no_mangle]
-pub extern "C" fn stat(path: *const i8, statbuf: *mut Stat) -> i32 {
+pub extern "C" fn wasm_vfs_stat(path: *const i8, statbuf: *mut Stat) -> i32 {
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
 
     let proc = get_or_init_proc();
@@ -813,7 +813,7 @@ pub extern "C" fn stat(path: *const i8, statbuf: *mut Stat) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn fstat(fd: i32, statbuf: *mut Stat) -> i32 {
+pub extern "C" fn wasm_vfs_fstat(fd: i32, statbuf: *mut Stat) -> i32 {
     let proc = get_or_init_proc();
     let proc = proc.as_ref().unwrap();
 
@@ -828,19 +828,19 @@ pub extern "C" fn fstat(fd: i32, statbuf: *mut Stat) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn lstat(path: *const i8, statbuf: *mut Stat) -> i32 {
+pub extern "C" fn wasm_vfs_lstat(path: *const i8, statbuf: *mut Stat) -> i32 {
     // for simplicity same as stat since we don't have special link-handling difference
-    stat(path, statbuf)
+    wasm_vfs_stat(path, statbuf)
 }
 
 #[no_mangle]
-pub extern "C" fn fstatat(dirfd: i32, pathname: *const i8, statbuf: *mut Stat, _flags: i32) -> i32 {
+pub extern "C" fn wasm_vfs_fstatat(dirfd: i32, pathname: *const i8, statbuf: *mut Stat, _flags: i32) -> i32 {
     // ignoring dirfd for simplicity
-    stat(pathname, statbuf)
+    wasm_vfs_stat(pathname, statbuf)
 }
 
 #[no_mangle]
-pub extern "C" fn getcwd(buf: *mut i8, size: usize) -> *mut i8 {
+pub extern "C" fn wasm_vfs_getcwd(buf: *mut i8, size: usize) -> *mut i8 {
     let proc = get_or_init_proc();
     let proc = proc.as_ref().unwrap();
     let cwd_str = proc.fs.current_directory.to_string_lossy();
@@ -858,7 +858,7 @@ pub extern "C" fn getcwd(buf: *mut i8, size: usize) -> *mut i8 {
 }
 
 #[no_mangle]
-pub extern "C" fn chdir(path: *const i8) -> i32 {
+pub extern "C" fn wasm_vfs_chdir(path: *const i8) -> i32 {
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
 
     let mut proc = get_or_init_proc();
@@ -880,7 +880,7 @@ pub extern "C" fn chdir(path: *const i8) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn fchdir(fd: i32) -> i32 {
+pub extern "C" fn wasm_vfs_fchdir(fd: i32) -> i32 {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
@@ -900,7 +900,7 @@ pub extern "C" fn fchdir(fd: i32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn chmod(path: *const i8, mode: u32) -> i32 {
+pub extern "C" fn wasm_vfs_chmod(path: *const i8, mode: u32) -> i32 {
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
 
     let mut proc = get_or_init_proc();
@@ -921,7 +921,7 @@ pub extern "C" fn chmod(path: *const i8, mode: u32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn fchmod(fd: i32, mode: u32) -> i32 {
+pub extern "C" fn wasm_vfs_fchmod(fd: i32, mode: u32) -> i32 {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
@@ -939,12 +939,12 @@ pub extern "C" fn fchmod(fd: i32, mode: u32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn fchmodat(_dirfd: i32, pathname: *const i8, mode: u32, _flags: i32) -> i32 {
-    chmod(pathname, mode)
+pub extern "C" fn wasm_vfs_fchmodat(_dirfd: i32, pathname: *const i8, mode: u32, _flags: i32) -> i32 {
+    wasm_vfs_chmod(pathname, mode)
 }
 
 #[no_mangle]
-pub extern "C" fn chown(path: *const i8, owner: u32, group: u32) -> i32 {
+pub extern "C" fn wasm_vfs_chown(path: *const i8, owner: u32, group: u32) -> i32 {
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
 
     let mut proc = get_or_init_proc();
@@ -966,12 +966,12 @@ pub extern "C" fn chown(path: *const i8, owner: u32, group: u32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn lchown(path: *const i8, owner: u32, group: u32) -> i32 {
-    chown(path, owner, group)
+pub extern "C" fn wasm_vfs_lchown(path: *const i8, owner: u32, group: u32) -> i32 {
+    wasm_vfs_chown(path, owner, group)
 }
 
 #[no_mangle]
-pub extern "C" fn fchown(fd: i32, owner: u32, group: u32) -> i32 {
+pub extern "C" fn wasm_vfs_fchown(fd: i32, owner: u32, group: u32) -> i32 {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
 
@@ -990,12 +990,12 @@ pub extern "C" fn fchown(fd: i32, owner: u32, group: u32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn fchownat(_dirfd: i32, pathname: *const i8, owner: u32, group: u32, _flags: i32) -> i32 {
-    chown(pathname, owner, group)
+pub extern "C" fn wasm_vfs_fchownat(_dirfd: i32, pathname: *const i8, owner: u32, group: u32, _flags: i32) -> i32 {
+    wasm_vfs_chown(pathname, owner, group)
 }
 
 #[no_mangle]
-pub extern "C" fn access(path: *const i8, mode: i32) -> i32 {
+pub extern "C" fn wasm_vfs_access(path: *const i8, mode: i32) -> i32 {
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
     let proc = get_or_init_proc();
     let proc = proc.as_ref().unwrap();
@@ -1015,12 +1015,12 @@ pub extern "C" fn access(path: *const i8, mode: i32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn faccessat(_dirfd: i32, pathname: *const i8, mode: i32, _flags: i32) -> i32 {
-    access(pathname, mode)
+pub extern "C" fn wasm_vfs_faccessat(_dirfd: i32, pathname: *const i8, mode: i32, _flags: i32) -> i32 {
+    wasm_vfs_access(pathname, mode)
 }
 
 #[no_mangle]
-pub extern "C" fn umask(mask: u32) -> u32 {
+pub extern "C" fn wasm_vfs_umask(mask: u32) -> u32 {
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
     let old = proc.umask_value;
@@ -1029,7 +1029,7 @@ pub extern "C" fn umask(mask: u32) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn rename(oldpath: *const i8, newpath: *const i8) -> i32 {
+pub extern "C" fn wasm_vfs_rename(oldpath: *const i8, newpath: *const i8) -> i32 {
     let old_str = unsafe { CStr::from_ptr(oldpath).to_string_lossy().into_owned() };
     let new_str = unsafe { CStr::from_ptr(newpath).to_string_lossy().into_owned() };
 
@@ -1052,18 +1052,18 @@ pub extern "C" fn rename(oldpath: *const i8, newpath: *const i8) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn renameat(olddirfd: i32, oldpath: *const i8, newdirfd: i32, newpath: *const i8) -> i32 {
+pub extern "C" fn wasm_vfs_renameat(olddirfd: i32, oldpath: *const i8, newdirfd: i32, newpath: *const i8) -> i32 {
     // ignoring dirfd for simplicity
-    rename(oldpath, newpath)
+    wasm_vfs_rename(oldpath, newpath)
 }
 
 #[no_mangle]
-pub extern "C" fn renameat2(olddirfd: i32, oldpath: *const i8, newdirfd: i32, newpath: *const i8, _flags: u32) -> i32 {
-    renameat(olddirfd, oldpath, newdirfd, newpath)
+pub extern "C" fn wasm_vfs_renameat2(olddirfd: i32, oldpath: *const i8, newdirfd: i32, newpath: *const i8, _flags: u32) -> i32 {
+    wasm_vfs_renameat(olddirfd, oldpath, newdirfd, newpath)
 }
 
 #[no_mangle]
-pub extern "C" fn link(oldpath: *const i8, newpath: *const i8) -> i32 {
+pub extern "C" fn wasm_vfs_link(oldpath: *const i8, newpath: *const i8) -> i32 {
     let old_str = unsafe { CStr::from_ptr(oldpath).to_string_lossy().into_owned() };
     let new_str = unsafe { CStr::from_ptr(newpath).to_string_lossy().into_owned() };
 
@@ -1083,12 +1083,12 @@ pub extern "C" fn link(oldpath: *const i8, newpath: *const i8) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn linkat(olddirfd: i32, oldpath: *const i8, newdirfd: i32, newpath: *const i8, _flags: i32) -> i32 {
-    link(oldpath, newpath)
+pub extern "C" fn wasm_vfs_linkat(olddirfd: i32, oldpath: *const i8, newdirfd: i32, newpath: *const i8, _flags: i32) -> i32 {
+    wasm_vfs_link(oldpath, newpath)
 }
 
 #[no_mangle]
-pub extern "C" fn unlink(pathname: *const i8) -> i32 {
+pub extern "C" fn wasm_vfs_unlink(pathname: *const i8) -> i32 {
     let path_str = unsafe { CStr::from_ptr(pathname).to_string_lossy().into_owned() };
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
@@ -1110,13 +1110,13 @@ pub extern "C" fn unlink(pathname: *const i8) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn unlinkat(dirfd: i32, pathname: *const i8, flags: i32) -> i32 {
+pub extern "C" fn wasm_vfs_unlinkat(dirfd: i32, pathname: *const i8, flags: i32) -> i32 {
     // ignoring flags and dirfd
-    unlink(pathname)
+    wasm_vfs_unlink(pathname)
 }
 
 #[no_mangle]
-pub extern "C" fn symlink(target: *const i8, linkpath: *const i8) -> i32 {
+pub extern "C" fn wasm_vfs_symlink(target: *const i8, linkpath: *const i8) -> i32 {
     let target_str = unsafe { CStr::from_ptr(target).to_string_lossy().into_owned() };
     let link_str = unsafe { CStr::from_ptr(linkpath).to_string_lossy().into_owned() };
 
@@ -1133,12 +1133,12 @@ pub extern "C" fn symlink(target: *const i8, linkpath: *const i8) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn symlinkat(target: *const i8, newdirfd: i32, linkpath: *const i8) -> i32 {
-    symlink(target, linkpath)
+pub extern "C" fn wasm_vfs_symlinkat(target: *const i8, newdirfd: i32, linkpath: *const i8) -> i32 {
+    wasm_vfs_symlink(target, linkpath)
 }
 
 #[no_mangle]
-pub extern "C" fn readlink(path: *const i8, buf: *mut i8, bufsize: usize) -> isize {
+pub extern "C" fn wasm_vfs_readlink(path: *const i8, buf: *mut i8, bufsize: usize) -> isize {
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
     let proc = get_or_init_proc();
     let proc = proc.as_ref().unwrap();
@@ -1164,12 +1164,12 @@ pub extern "C" fn readlink(path: *const i8, buf: *mut i8, bufsize: usize) -> isi
 }
 
 #[no_mangle]
-pub extern "C" fn readlinkat(dirfd: i32, pathname: *const i8, buf: *mut i8, bufsize: usize) -> isize {
-    readlink(pathname, buf, bufsize)
+pub extern "C" fn wasm_vfs_readlinkat(dirfd: i32, pathname: *const i8, buf: *mut i8, bufsize: usize) -> isize {
+    wasm_vfs_readlink(pathname, buf, bufsize)
 }
 
 #[no_mangle]
-pub extern "C" fn mkdir(path: *const i8, mode: u32) -> i32 {
+pub extern "C" fn wasm_vfs_mkdir(path: *const i8, mode: u32) -> i32 {
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
 
     let mut proc = get_or_init_proc();
@@ -1193,12 +1193,12 @@ pub extern "C" fn mkdir(path: *const i8, mode: u32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn mkdirat(dirfd: i32, pathname: *const i8, mode: u32) -> i32 {
-    mkdir(pathname, mode)
+pub extern "C" fn wasm_vfs_mkdirat(dirfd: i32, pathname: *const i8, mode: u32) -> i32 {
+    wasm_vfs_mkdir(pathname, mode)
 }
 
 #[no_mangle]
-pub extern "C" fn rmdir(path: *const i8) -> i32 {
+pub extern "C" fn wasm_vfs_rmdir(path: *const i8) -> i32 {
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
 
     let mut proc = get_or_init_proc();
@@ -1228,7 +1228,7 @@ pub extern "C" fn rmdir(path: *const i8) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn truncate(path: *const i8, length: i64) -> i32 {
+pub extern "C" fn wasm_vfs_truncate(path: *const i8, length: i64) -> i32 {
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
     let mut proc = get_or_init_proc();
     let proc = proc.as_mut().unwrap();
@@ -1246,7 +1246,7 @@ pub extern "C" fn truncate(path: *const i8, length: i64) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn ftruncate(fd: i32, length: i64) -> i32 {
+pub extern "C" fn wasm_vfs_ftruncate(fd: i32, length: i64) -> i32 {
     if length < 0 {
         return -1;
     }
@@ -1262,7 +1262,7 @@ pub extern "C" fn ftruncate(fd: i32, length: i64) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn fallocate(fd: i32, _mode: i32, offset: i64, len: i64) -> i32 {
+pub extern "C" fn wasm_vfs_fallocate(fd: i32, _mode: i32, offset: i64, len: i64) -> i32 {
     if offset < 0 || len < 0 {
         return -1;
     }
@@ -1292,88 +1292,88 @@ pub extern "C" fn fallocate(fd: i32, _mode: i32, offset: i64, len: i64) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn posix_fallocate(fd: i32, offset: i64, len: i64) -> i32 {
-    fallocate(fd, 0, offset, len)
+pub extern "C" fn wasm_vfs_posix_fallocate(fd: i32, offset: i64, len: i64) -> i32 {
+    wasm_vfs_fallocate(fd, 0, offset, len)
 }
 
 #[no_mangle]
-pub extern "C" fn flock(fd: i32, _operation: i32) -> i32 {
+pub extern "C" fn wasm_vfs_flock(fd: i32, _operation: i32) -> i32 {
     // no-op
     0
 }
 
 #[no_mangle]
-pub extern "C" fn mmap(_addr: *mut u8, _length: usize, _prot: i32, _flags: i32, _fd: i32, _offset: isize) -> *mut u8 {
+pub extern "C" fn wasm_vfs_mmap(_addr: *mut u8, _length: usize, _prot: i32, _flags: i32, _fd: i32, _offset: isize) -> *mut u8 {
     // not supported in this in-memory fs
     std::ptr::null_mut()
 }
 
 #[no_mangle]
-pub extern "C" fn munmap(_addr: *mut u8, _length: usize) -> i32 {
+pub extern "C" fn wasm_vfs_munmap(_addr: *mut u8, _length: usize) -> i32 {
     // no-op
     0
 }
 
 #[no_mangle]
-pub extern "C" fn mprotect(_addr: *mut u8, _length: usize, _prot: i32) -> i32 {
+pub extern "C" fn wasm_vfs_mprotect(_addr: *mut u8, _length: usize, _prot: i32) -> i32 {
     // no-op
     0
 }
 
 #[no_mangle]
-pub extern "C" fn mlock(_addr: *const u8, _len: usize) -> i32 {
+pub extern "C" fn wasm_vfs_mlock(_addr: *const u8, _len: usize) -> i32 {
     0
 }
 
 #[no_mangle]
-pub extern "C" fn munlock(_addr: *const u8, _len: usize) -> i32 {
+pub extern "C" fn wasm_vfs_munlock(_addr: *const u8, _len: usize) -> i32 {
     0
 }
 
 #[no_mangle]
-pub extern "C" fn msync(_addr: *mut u8, _length: usize, _flags: i32) -> i32 {
+pub extern "C" fn wasm_vfs_msync(_addr: *mut u8, _length: usize, _flags: i32) -> i32 {
     0
 }
 
 #[no_mangle]
-pub extern "C" fn sync() {
+pub extern "C" fn wasm_vfs_sync() {
     // no-op
 }
 
 #[no_mangle]
-pub extern "C" fn fsync(_fd: i32) -> i32 {
-    // no-op
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn fdatasync(_fd: i32) -> i32 {
+pub extern "C" fn wasm_vfs_fsync(_fd: i32) -> i32 {
     // no-op
     0
 }
 
 #[no_mangle]
-pub extern "C" fn syncfs(_fd: i32) -> i32 {
+pub extern "C" fn wasm_vfs_fdatasync(_fd: i32) -> i32 {
+    // no-op
     0
 }
 
 #[no_mangle]
-pub extern "C" fn inotify_init() -> i32 {
+pub extern "C" fn wasm_vfs_syncfs(_fd: i32) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn wasm_vfs_inotify_init() -> i32 {
     -1
 }
 
 #[no_mangle]
-pub extern "C" fn inotify_init1(_flags: i32) -> i32 {
+pub extern "C" fn wasm_vfs_inotify_init1(_flags: i32) -> i32 {
     -1
 }
 
 #[no_mangle]
-pub extern "C" fn inotify_add_watch(_fd: i32, _pathname: *const i8, _mask: u32) -> i32 {
+pub extern "C" fn wasm_vfs_inotify_add_watch(_fd: i32, _pathname: *const i8, _mask: u32) -> i32 {
     -1
 }
 
 #[no_mangle]
-pub extern "C" fn inotify_rm_watch(_fd: i32, _wd: i32) -> i32 {
+pub extern "C" fn wasm_vfs_inotify_rm_watch(_fd: i32, _wd: i32) -> i32 {
     -1
 }
 
@@ -1391,7 +1391,7 @@ pub fn mount_host_directory(host_path: &path, mount_path: &path) -> result<(), s
 
     // recursively copy host_path into in-memory fs at mount_path
     fn recurse(proc: &mut proc, host: &path, vfs_path: &path) -> std::io::result<()> {
-        let meta = host.symlink_metadata()?;
+        let meta = host.wasm_vfs_symlink_metadata()?;
         if meta.is_dir() {
             // mkdir
             if vfs_path != path::new("/") {
