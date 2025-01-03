@@ -1,12 +1,22 @@
-use std::ffi::{CStr, CString};
-use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
-use std::collections::HashMap;
-use lazy_static::lazy_static;
+//use std::ffi::{CStr, CString};
+//use std::path::PathBuf;
+//use std::sync::{Mutex, MutexGuard};
+//use std::collections::HashMap;
+//use lazy_static::lazy_static;
+//use std::cmp;
+
+
+// In project implementations - replaces rust's std crates:
+
+use crate::ffi::CStr;
+use crate::path::PathBuf;
+use crate::sync::{Mutex, MutexGuard};
+use crate::collections::HashMap;
+use crate::cmp::{min, max};
+
 use crate::filesystem::{
     FileSystem, Inode, InodeKind, Permissions, Permission, Stat, Dirent, Dirent64
 };
-use std::cmp;
 
 pub type FileDescriptor = i32;
 
@@ -37,6 +47,10 @@ const X_OK: i32 = 1;
 // Proc is intended to be instantiated from a separate Wasm module
 // however it can be used local to this module if not sharing with
 // other externel resource modules (wasm-net, etc.). This is an option.
+//
+
+const OPEN_FILES_CAP: usize = 256;
+
 pub struct Proc {
     pub fs: FileSystem,
 
@@ -44,7 +58,7 @@ pub struct Proc {
     // In a real FS, the inode number acts like an index; we can always reference fs.inodes.
     // (change this?)
     fd_table: [Option<u64>; 1024],
-    open_files: std::collections::HashMap<FileDescriptor, OpenFileHandle>,
+    open_files: HashMap<FileDescriptor, OpenFileHandle, OPEN_FILES_CAP>,
     next_fd: FileDescriptor,
 
     // For the uninitiated:
@@ -157,16 +171,29 @@ impl Proc {
     }
 }
 
-lazy_static! {
-    static ref GLOBAL_PROC: Mutex<Option<Proc>> = Mutex::new(None);
+//lazy_static! {
+    //static ref GLOBAL_PROC: Mutex<Option<Proc>> = Mutex::new(None);
+//}
+
+// Replace old static line:
+static mut GLOBAL_PROC: Option<Mutex<Proc>> = None;
+
+// Then add two helper functions:
+fn init_global_proc() {
+    unsafe {
+        if GLOBAL_PROC.is_none() {
+            GLOBAL_PROC = Some(Mutex::new(Proc::new()));
+        }
+    }
 }
 
-fn get_or_init_proc() -> MutexGuard<'static, Option<Proc>> {
-    let mut proc = GLOBAL_PROC.lock().unwrap();
-    if proc.is_none() {
-        *proc = Some(Proc::new());
+fn get_or_init_proc() -> MutexGuard<'static, Proc> {
+    unsafe {
+        if GLOBAL_PROC.is_none() {
+            GLOBAL_PROC = Some(Mutex::new(Proc::new()));
+        }
+        GLOBAL_PROC.as_ref().unwrap().lock()
     }
-    proc
 }
 
 fn inode_kind_to_dtype(kind: &InodeKind) -> u8 {
@@ -224,16 +251,16 @@ pub unsafe extern "C" fn wasm_vfs_init_proc(_size: u32) -> *const u8 {
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_open(path: *const i8, flags: i32, mode: u32) -> i32 {
-    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
+    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy() };
     let path_buf = PathBuf::from(path_str);
 
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     let should_create = (flags & O_CREAT) == O_CREAT;
     let should_truncate = (flags & O_TRUNC) == O_TRUNC;
     let append_mode = (flags & O_APPEND) == O_APPEND;
 
+    // 1) Determine the inode_number
     let inode_number = if let Some(inode_num) = proc.fs.lookup_inode_by_path(&path_buf) {
         inode_num
     } else if should_create {
@@ -242,7 +269,7 @@ pub extern "C" fn wasm_vfs_open(path: *const i8, flags: i32, mode: u32) -> i32 {
         return -1;
     };
 
-
+    // 2) Possibly truncate
     if should_truncate {
         if let Some(data) = proc.fs.files.get_mut(&inode_number) {
             data.clear();
@@ -253,22 +280,32 @@ pub extern "C" fn wasm_vfs_open(path: *const i8, flags: i32, mode: u32) -> i32 {
         }
     }
 
-    let fd = proc.allocate_fd();
-    let fd = match fd {
-        Some(fd) => fd,
+    // 3) Allocate FD
+    let fd = match proc.allocate_fd() {
+        Some(x) => x,
         None => return -1,
     };
-
     proc.fd_table[fd as usize] = Some(inode_number);
+
+    // 4) If append_mode, figure out the file’s length in a short scope
+    let initial_pos = if append_mode {
+        let data_len = proc
+            .fs
+            .files
+            .get(&inode_number)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        data_len as u64
+    } else {
+        0
+    };
+
+    // 5) Finally insert the handle
     proc.open_files.insert(
         fd,
         OpenFileHandle {
             inode_number,
-            position: if append_mode {
-                proc.fs.files.get(&inode_number).unwrap().len() as u64
-            } else {
-                0
-            },
+            position: initial_pos,
             append_mode,
         },
     );
@@ -276,10 +313,10 @@ pub extern "C" fn wasm_vfs_open(path: *const i8, flags: i32, mode: u32) -> i32 {
     fd
 }
 
+
 #[no_mangle]
 pub extern "C" fn wasm_vfs_close(fd: i32) -> i32 {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     if (fd as usize) < proc.fd_table.len() && proc.fd_table[fd as usize].is_some() {
         proc.fd_table[fd as usize] = None;
@@ -298,67 +335,88 @@ pub extern "C" fn wasm_vfs_creat(path: *const i8, mode: u32) -> i32 {
 #[no_mangle]
 pub extern "C" fn wasm_vfs_read(fd: i32, buf: *mut u8, count: usize) -> isize {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
-    let handle = match proc.open_files.get_mut(&fd) {
-        Some(h) => h,
-        None => return -1,
+    let (inode_num, position) = {
+        let h = match proc.open_files.get_mut(&fd) {
+            Some(x) => x,
+            None => return -1,
+        };
+        (h.inode_number, h.position)
     };
 
-    let data = match proc.fs.files.get(&handle.inode_number) {
+    let data = match proc.fs.files.get(&inode_num) {
         Some(d) => d,
         None => return -1,
     };
-
-    let position = handle.position as usize;
-    if position >= data.len() {
+    if position as usize >= data.len() {
         return 0; // EOF
     }
 
-    let to_read = cmp::min(count, data.len() - position);
+    let to_read = core::cmp::min(count, data.len() - position as usize);
     unsafe {
-        std::ptr::copy_nonoverlapping(data.as_ptr().add(position), buf, to_read);
+        std::ptr::copy_nonoverlapping(data.as_ptr().add(position as usize), buf, to_read);
     }
 
-    handle.position += to_read as u64;
+
+    if let Some(h2) = proc.open_files.get_mut(&fd) {
+        h2.position += to_read as u64;
+    }
+
     to_read as isize
 }
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_write(fd: i32, buf: *const u8, count: usize) -> isize {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
-    let handle = match proc.open_files.get_mut(&fd) {
-        Some(h) => h,
-        None => return -1,
+
+    let (inode_num, old_pos, append_mode) = {
+        let handle = match proc.open_files.get_mut(&fd) {
+            Some(h) => h,
+            None => return -1,
+        };
+        (handle.inode_number, handle.position, handle.append_mode)
     };
 
-    let data = proc.fs.files.get_mut(&handle.inode_number).unwrap();
 
-    if handle.append_mode {
-        handle.position = data.len() as u64;
+    let new_position = {
+        let data = match proc.fs.files.get_mut(&inode_num) {
+            Some(d) => d,
+            None => return -1,
+        };
+        let mut actual_pos = if append_mode { data.len() as u64 } else { old_pos };
+
+        if actual_pos as usize + count > data.len() {
+            data.resize(actual_pos as usize + count, 0);
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(buf, data.as_mut_ptr().add(actual_pos as usize), count);
+        }
+        actual_pos += count as u64;
+
+
+        actual_pos
+    };
+
+
+    {
+        if let Some(handle2) = proc.open_files.get_mut(&fd) {
+            handle2.position = new_position;
+        }
     }
 
-    let position = handle.position as usize;
 
-    if position + count > data.len() {
-        data.resize(position + count, 0);
-    }
+    {
 
-    unsafe {
-        std::ptr::copy_nonoverlapping(buf, data.as_mut_ptr().add(position), count);
-    }
-
-    handle.position += count as u64;
-
-    // Update inode size
-    if let Some(inode) = proc.fs.inodes.get_mut(handle.inode_number as usize) {
-        inode.size = data.len() as u64;
+        let final_size = proc.fs.files.get(&inode_num).map(|v| v.len()).unwrap_or(0);
+        if let Some(inode) = proc.fs.inodes.get_mut(inode_num as usize) {
+            inode.size = final_size as u64;
+        }
     }
 
     count as isize
 }
+
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_openat(_dirfd: i32, pathname: *const i8, flags: i32, mode: u32) -> i32 {
@@ -368,7 +426,6 @@ pub extern "C" fn wasm_vfs_openat(_dirfd: i32, pathname: *const i8, flags: i32, 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_dup(oldfd: i32) -> i32 {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     if (oldfd as usize) < proc.fd_table.len() {
         if let Some(inode_number) = proc.fd_table[oldfd as usize] {
@@ -398,7 +455,6 @@ pub extern "C" fn wasm_vfs_dup(oldfd: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn wasm_vfs_dup2(oldfd: i32, newfd: i32) -> i32 {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     if (oldfd as usize) < proc.fd_table.len() && (newfd as usize) < proc.fd_table.len() {
         if let Some(inode_number) = proc.fd_table[oldfd as usize] {
@@ -427,15 +483,20 @@ pub extern "C" fn wasm_vfs_dup2(oldfd: i32, newfd: i32) -> i32 {
     }
     -1
 }
+
 #[no_mangle]
 pub extern "C" fn wasm_vfs_pread64(fd: i32, buf: *mut u8, count: usize, offset: i64) -> isize {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
-    let handle = match proc.open_files.get(&fd) {
-        Some(h) => h,
-        None => return -1,
+
+    let inode_num = {
+        let h = match proc.open_files.get(&fd) {
+            Some(x) => x,
+            None => return -1,
+        };
+        h.inode_number
     };
-    let data = match proc.fs.files.get(&handle.inode_number) {
+
+    let data = match proc.fs.files.get(&inode_num) {
         Some(d) => d,
         None => return -1,
     };
@@ -444,205 +505,345 @@ pub extern "C" fn wasm_vfs_pread64(fd: i32, buf: *mut u8, count: usize, offset: 
     if position >= data.len() {
         return 0;
     }
-    let to_read = cmp::min(count, data.len() - position);
-
+    let to_read = core::cmp::min(count, data.len() - position);
     unsafe {
         std::ptr::copy_nonoverlapping(data.as_ptr().add(position), buf, to_read);
     }
-
     to_read as isize
 }
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_pwrite64(fd: i32, buf: *const u8, count: usize, offset: i64) -> isize {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
-    let handle = match proc.open_files.get(&fd) {
-        Some(h) => h,
-        None => return -1,
+
+
+    let inode_num = {
+        let handle = match proc.open_files.get(&fd) {
+            Some(h) => h,
+            None => return -1,
+        };
+        handle.inode_number
     };
-    let data = proc.fs.files.get_mut(&handle.inode_number).unwrap();
 
-    let position = offset as usize;
-    if position + count > data.len() {
-        data.resize(position + count, 0);
+    {
+        let data = match proc.fs.files.get_mut(&inode_num) {
+            Some(d) => d,
+            None => return -1,
+        };
+        let position = offset as usize;
+        if position + count > data.len() {
+            data.resize(position + count, 0);
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(buf, data.as_mut_ptr().add(position), count);
+        }
     }
 
-    unsafe {
-        std::ptr::copy_nonoverlapping(buf, data.as_mut_ptr().add(position), count);
-    }
 
-    if let Some(inode) = proc.fs.inodes.get_mut(handle.inode_number as usize) {
-        inode.size = data.len() as u64;
+    {
+        let final_len = proc.fs.files.get(&inode_num).map(|v| v.len()).unwrap_or(0);
+        if let Some(inode) = proc.fs.inodes.get_mut(inode_num as usize) {
+            inode.size = final_len as u64;
+        }
     }
 
     count as isize
 }
 
+
 #[no_mangle]
-pub extern "C" fn wasm_vfs_sendfile(out_fd: i32, in_fd: i32, offset: *mut i64, count: usize) -> isize {
+pub extern "C" fn wasm_vfs_sendfile(
+    out_fd: i32,
+    in_fd: i32,
+    offset: *mut i64,
+    count: usize
+) -> isize {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
-
-    let (in_inode_number, in_position, in_append_mode) = {
-        let in_handle = match proc.open_files.get(&in_fd) {
+    let (in_inode_number, in_pos, in_app) = {
+        let h_in = match proc.open_files.get(&in_fd) {
             Some(h) => h,
             None => return -1,
         };
-        (in_handle.inode_number, in_handle.position, in_handle.append_mode)
+        (h_in.inode_number, h_in.position, h_in.append_mode)
     };
 
-    let (out_inode_number, out_position, out_append_mode) = {
-        let out_handle = match proc.open_files.get(&out_fd) {
+    let (out_inode_number, out_pos, out_app) = {
+        let h_out = match proc.open_files.get(&out_fd) {
             Some(h) => h,
             None => return -1,
         };
-        (out_handle.inode_number, out_handle.position, out_handle.append_mode)
+        (h_out.inode_number, h_out.position, h_out.append_mode)
     };
 
-    let in_data = proc.fs.files.get(&in_inode_number).unwrap().clone();
+    let in_data = match proc.fs.files.get(&in_inode_number) {
+        Some(d) => d.clone(),
+        None => return -1,
+    };
 
     let mut read_pos = if !offset.is_null() {
         unsafe { *offset as usize }
     } else {
-        in_position as usize
+        in_pos as usize
     };
-
     if read_pos >= in_data.len() {
         return 0;
     }
 
-    let to_copy = std::cmp::min(count, in_data.len() - read_pos);
-
+    let to_copy = core::cmp::min(count, in_data.len() - read_pos);
 
     {
-        let out_data = proc.fs.files.get_mut(&out_inode_number).unwrap();
-        let out_pos = if out_append_mode {
-            out_data.len()
-        } else {
-            out_position as usize
+        let out_data = match proc.fs.files.get_mut(&out_inode_number) {
+            Some(d) => d,
+            None => return -1,
         };
 
-        if out_pos + to_copy > out_data.len() {
-            out_data.resize(out_pos + to_copy, 0);
+        let real_out_pos = if out_app {
+            out_data.len()
+        } else {
+            out_pos as usize
+        };
+
+        if real_out_pos + to_copy > out_data.len() {
+            out_data.resize(real_out_pos + to_copy, 0);
         }
-
-        out_data[out_pos..out_pos+to_copy].copy_from_slice(&in_data[read_pos..read_pos+to_copy]);
-
+        out_data[real_out_pos..real_out_pos + to_copy]
+            .copy_from_slice(&in_data[read_pos..read_pos + to_copy]);
 
         if !offset.is_null() {
             unsafe {
                 *offset += to_copy as i64;
             }
         } else {
-            if let Some(in_handle_mut) = proc.open_files.get_mut(&in_fd) {
-                in_handle_mut.position = in_position + to_copy as u64;
-            }
         }
+    }
 
 
-        if let Some(out_handle_mut) = proc.open_files.get_mut(&out_fd) {
-            if out_append_mode {
-                out_handle_mut.position = out_data.len() as u64;
-            } else {
-                out_handle_mut.position = out_position + to_copy as u64;
-            }
+    if offset.is_null() {
+        if let Some(h_in_mut) = proc.open_files.get_mut(&in_fd) {
+            h_in_mut.position = in_pos + to_copy as u64;
         }
+    }
 
+    if let Some(h_out_mut) = proc.open_files.get_mut(&out_fd) {
+        if out_app {
+            let new_len = {
+            };
+        } else {
+            h_out_mut.position = out_pos + to_copy as u64;
+        }
+    }
 
-        let new_size = out_data.len();
+    let new_len = {
+        if let Some(d) = proc.fs.files.get(&out_inode_number) {
+            d.len()
+        } else {
+            0
+        }
+    };
 
-        drop(out_data);
-
-
-        if let Some(out_inode) = proc.get_inode_mut(out_inode_number) {
-            out_inode.size = new_size as u64;
+    if let Some(h_out_mut) = proc.open_files.get_mut(&out_fd) {
+        if out_app {
+            h_out_mut.position = new_len as u64;
+        } else {
+            h_out_mut.position = out_pos + to_copy as u64;
         }
     }
 
     to_copy as isize
 }
 
+
 #[no_mangle]
 pub extern "C" fn wasm_vfs_sendfile64(out_fd: i32, in_fd: i32, offset: *mut i64, count: usize) -> isize {
     wasm_vfs_sendfile(out_fd, in_fd, offset, count)
 }
 
+//#[no_mangle]
+//pub extern "C" fn wasm_vfs_splice(fd_in: i32, off_in: *mut i64, fd_out: i32, off_out: *mut i64, len: usize, _flags: u32) -> isize {
+    //let mut proc = get_or_init_proc();
+
+    //let (in_inode_number, in_position, in_append_mode) = {
+        //let in_handle = proc.open_files.get(&fd_in).ok_or(-1).unwrap();
+        //(in_handle.inode_number, in_handle.position, in_handle.append_mode)
+    //};
+
+    //let (out_inode_number, out_position, out_append_mode) = {
+        //let out_handle = proc.open_files.get(&fd_out).ok_or(-1).unwrap();
+        //(out_handle.inode_number, out_handle.position, out_handle.append_mode)
+    //};
+
+    //let in_data = proc.fs.files.get(&in_inode_number).unwrap().clone();
+
+    //let mut in_pos = if !off_in.is_null() {
+        //unsafe { *off_in as usize }
+    //} else {
+        //in_position as usize
+    //};
+
+    //if in_pos >= in_data.len() {
+        //return 0;
+    //}
+
+    //let to_copy = min(len, in_data.len() - in_pos);
+
+    //{
+        //let out_data = proc.fs.files.get_mut(&out_inode_number).unwrap();
+        //let mut out_pos = if !off_out.is_null() {
+            //unsafe { *off_out as usize }
+        //} else if out_append_mode {
+            //out_data.len()
+        //} else {
+            //out_position as usize
+        //};
+
+        //if out_pos + to_copy > out_data.len() {
+            //out_data.resize(out_pos + to_copy, 0);
+        //}
+
+        //out_data[out_pos..out_pos+to_copy].copy_from_slice(&in_data[in_pos..in_pos+to_copy]);
+
+        //if !off_in.is_null() {
+            //unsafe {
+                //*off_in += to_copy as i64;
+            //}
+        //} else {
+            //if let Some(in_handle_mut) = proc.open_files.get_mut(&fd_in) {
+                //in_handle_mut.position = in_position + to_copy as u64;
+            //}
+        //}
+
+        //if !off_out.is_null() {
+            //unsafe {
+                //*off_out += to_copy as i64;
+            //}
+        //} else {
+            //if let Some(out_handle_mut) = proc.open_files.get_mut(&fd_out) {
+                //if out_append_mode {
+                    //out_handle_mut.position = out_data.len() as u64;
+                //} else {
+                    //out_handle_mut.position = out_position + to_copy as u64;
+                //}
+            //}
+        //}
+
+        //let new_size = out_data.len();
+        //drop(out_data);
+
+        //if let Some(out_inode) = proc.get_inode_mut(out_inode_number) {
+            //out_inode.size = new_size as u64;
+        //}
+    //}
+
+    //to_copy as isize
+//}
+//
+
 #[no_mangle]
-pub extern "C" fn wasm_vfs_splice(fd_in: i32, off_in: *mut i64, fd_out: i32, off_out: *mut i64, len: usize, _flags: u32) -> isize {
+pub extern "C" fn wasm_vfs_splice(
+    fd_in: i32,
+    off_in: *mut i64,
+    fd_out: i32,
+    off_out: *mut i64,
+    len: usize,
+    _flags: u32
+) -> isize {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
-    let (in_inode_number, in_position, in_append_mode) = {
-        let in_handle = proc.open_files.get(&fd_in).ok_or(-1).unwrap();
-        (in_handle.inode_number, in_handle.position, in_handle.append_mode)
+    // 1) Input FD info
+    let (in_ino, in_pos, in_app) = {
+        let h = match proc.open_files.get(&fd_in) {
+            Some(x) => x,
+            None => return -1,
+        };
+        (h.inode_number, h.position, h.append_mode)
     };
 
-    let (out_inode_number, out_position, out_append_mode) = {
-        let out_handle = proc.open_files.get(&fd_out).ok_or(-1).unwrap();
-        (out_handle.inode_number, out_handle.position, out_handle.append_mode)
+    // 2) Output FD info
+    let (out_ino, out_pos, out_app) = {
+        let h = match proc.open_files.get(&fd_out) {
+            Some(x) => x,
+            None => return -1,
+        };
+        (h.inode_number, h.position, h.append_mode)
     };
 
-    let in_data = proc.fs.files.get(&in_inode_number).unwrap().clone();
+    // 3) Clone input
+    let in_data = match proc.fs.files.get(&in_ino) {
+        Some(d) => d.clone(),
+        None => return -1,
+    };
 
-    let mut in_pos = if !off_in.is_null() {
+    let mut read_pos = if !off_in.is_null() {
         unsafe { *off_in as usize }
     } else {
-        in_position as usize
+        in_pos as usize
     };
-
-    if in_pos >= in_data.len() {
+    if read_pos >= in_data.len() {
         return 0;
     }
 
-    let to_copy = std::cmp::min(len, in_data.len() - in_pos);
+    let to_copy = core::cmp::min(len, in_data.len() - read_pos);
 
     {
-        let out_data = proc.fs.files.get_mut(&out_inode_number).unwrap();
-        let mut out_pos = if !off_out.is_null() {
-            unsafe { *off_out as usize }
-        } else if out_append_mode {
-            out_data.len()
-        } else {
-            out_position as usize
+        // 4) Mutably borrow out_data in a short block
+        let out_data = match proc.fs.files.get_mut(&out_ino) {
+            Some(d) => d,
+            None => return -1,
         };
 
-        if out_pos + to_copy > out_data.len() {
-            out_data.resize(out_pos + to_copy, 0);
-        }
+        let mut write_pos = if !off_out.is_null() {
+            unsafe { *off_out as usize }
+        } else if out_app {
+            out_data.len()
+        } else {
+            out_pos as usize
+        };
 
-        out_data[out_pos..out_pos+to_copy].copy_from_slice(&in_data[in_pos..in_pos+to_copy]);
+        if write_pos + to_copy > out_data.len() {
+            out_data.resize(write_pos + to_copy, 0);
+        }
+        out_data[write_pos..write_pos + to_copy]
+            .copy_from_slice(&in_data[read_pos..read_pos + to_copy]);
 
         if !off_in.is_null() {
-            unsafe {
-                *off_in += to_copy as i64;
-            }
-        } else {
-            if let Some(in_handle_mut) = proc.open_files.get_mut(&fd_in) {
-                in_handle_mut.position = in_position + to_copy as u64;
-            }
+            unsafe { *off_in += to_copy as i64; }
         }
-
         if !off_out.is_null() {
-            unsafe {
-                *off_out += to_copy as i64;
-            }
-        } else {
-            if let Some(out_handle_mut) = proc.open_files.get_mut(&fd_out) {
-                if out_append_mode {
-                    out_handle_mut.position = out_data.len() as u64;
-                } else {
-                    out_handle_mut.position = out_position + to_copy as u64;
-                }
-            }
+            unsafe { *off_out += to_copy as i64; }
         }
+    }
 
-        let new_size = out_data.len();
-        drop(out_data);
+    if off_in.is_null() {
+        if let Some(in_handle) = proc.open_files.get_mut(&fd_in) {
+            in_handle.position = in_pos + to_copy as u64;
+        }
+    }
 
-        if let Some(out_inode) = proc.get_inode_mut(out_inode_number) {
-            out_inode.size = new_size as u64;
+    let (out_app_local, old_out_pos) = {
+        if let Some(out_handle) = proc.open_files.get_mut(&fd_out) {
+            (out_handle.append_mode, out_handle.position)
+        } else {
+            // If no handle, bail out
+            return -1;
+        }
+    };
+
+    let length_copy = if out_app_local && off_out.is_null() {
+        if let Some(od) = proc.fs.files.get(&out_ino) {
+            od.len()
+        } else {
+            0
+        }
+    } else {
+        old_out_pos as usize
+    };
+
+    if let Some(out_handle) = proc.open_files.get_mut(&fd_out) {
+        if out_app_local && off_out.is_null() {
+            out_handle.position = length_copy as u64;
+        } else if off_out.is_null() {
+            out_handle.position = old_out_pos + to_copy as u64;
         }
     }
 
@@ -652,7 +853,6 @@ pub extern "C" fn wasm_vfs_splice(fd_in: i32, off_in: *mut i64, fd_out: i32, off
 #[no_mangle]
 pub extern "C" fn wasm_vfs_getdents(fd: i32, dirp: *mut Dirent, count: usize) -> isize {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
 
     let inode_number = {
@@ -708,7 +908,7 @@ pub extern "C" fn wasm_vfs_getdents(fd: i32, dirp: *mut Dirent, count: usize) ->
     let mut dirp_ptr = dirp as *mut u8;
 
     for (path, ino) in entries.iter().skip(start) {
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let name = path.file_name().unwrap_or_default().to_string();
         let d_type = inode_kind_to_dtype(&proc.get_inode(*ino).unwrap().kind);
 
         let mut d: Dirent = Dirent {
@@ -767,39 +967,44 @@ pub extern "C" fn wasm_vfs_getdents64(fd: i32, dirp: *mut Dirent64, count: usize
 #[no_mangle]
 pub extern "C" fn wasm_vfs_lseek(fd: i32, offset: i64, whence: i32) -> i64 {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
-    let handle = match proc.open_files.get_mut(&fd) {
-        Some(h) => h,
+    let (inode_num, old_pos) = {
+        let h = match proc.open_files.get_mut(&fd) {
+            Some(x) => x,
+            None => return -1,
+        };
+        (h.inode_number, h.position)
+    };
+
+
+    let size = match proc.fs.files.get(&inode_num) {
+        Some(d) => d.len() as i64,
         None => return -1,
     };
 
-    let size = {
-        let data = proc.fs.files.get(&handle.inode_number).unwrap();
-        data.len() as i64
-    };
-
     let new_pos = match whence {
-        seek_set => offset,
-        seek_cur => handle.position as i64 + offset,
-        seek_end => size + offset,
+        0 => offset,              // SEEK_SET
+        1 => old_pos as i64 + offset, // SEEK_CUR
+        2 => size + offset,       // SEEK_END
         _ => return -1,
     };
-
     if new_pos < 0 {
         return -1;
     }
 
-    handle.position = new_pos as u64;
+
+    if let Some(h2) = proc.open_files.get_mut(&fd) {
+        h2.position = new_pos as u64;
+    }
+
     new_pos
 }
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_stat(path: *const i8, statbuf: *mut Stat) -> i32 {
-    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
+    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy() };
 
     let proc = get_or_init_proc();
-    let proc = proc.as_ref().unwrap();
 
     let abs_path = proc.get_absolute_path(&PathBuf::from(path_str));
     let inode_num = match proc.fs.lookup_inode_by_path(&abs_path) {
@@ -815,7 +1020,6 @@ pub extern "C" fn wasm_vfs_stat(path: *const i8, statbuf: *mut Stat) -> i32 {
 #[no_mangle]
 pub extern "C" fn wasm_vfs_fstat(fd: i32, statbuf: *mut Stat) -> i32 {
     let proc = get_or_init_proc();
-    let proc = proc.as_ref().unwrap();
 
     let inode_num = match proc.fd_table.get(fd as usize) {
         Some(Some(i)) => *i,
@@ -829,29 +1033,26 @@ pub extern "C" fn wasm_vfs_fstat(fd: i32, statbuf: *mut Stat) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_lstat(path: *const i8, statbuf: *mut Stat) -> i32 {
-    // for simplicity same as stat since we don't have special link-handling difference
     wasm_vfs_stat(path, statbuf)
 }
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_fstatat(dirfd: i32, pathname: *const i8, statbuf: *mut Stat, _flags: i32) -> i32 {
-    // ignoring dirfd for simplicity
     wasm_vfs_stat(pathname, statbuf)
 }
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_getcwd(buf: *mut i8, size: usize) -> *mut i8 {
     let proc = get_or_init_proc();
-    let proc = proc.as_ref().unwrap();
     let cwd_str = proc.fs.current_directory.to_string_lossy();
 
     let bytes = cwd_str.as_bytes();
     if bytes.len() + 1 > size {
-        return std::ptr::null_mut();
+        return core::ptr::null_mut();
     }
 
     unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, bytes.len());
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, bytes.len());
         *buf.add(bytes.len()) = 0;
     }
     buf
@@ -859,10 +1060,9 @@ pub extern "C" fn wasm_vfs_getcwd(buf: *mut i8, size: usize) -> *mut i8 {
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_chdir(path: *const i8) -> i32 {
-    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
+    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy() };
 
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     let abs_path = proc.get_absolute_path(&PathBuf::from(path_str));
     let inode_num = match proc.fs.lookup_inode_by_path(&abs_path) {
@@ -882,7 +1082,6 @@ pub extern "C" fn wasm_vfs_chdir(path: *const i8) -> i32 {
 #[no_mangle]
 pub extern "C" fn wasm_vfs_fchdir(fd: i32) -> i32 {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     let inode_num = match proc.fd_table.get(fd as usize) {
         Some(Some(i)) => *i,
@@ -890,7 +1089,6 @@ pub extern "C" fn wasm_vfs_fchdir(fd: i32) -> i32 {
     };
     let inode = proc.get_inode(inode_num).unwrap();
     if let InodeKind::Directory = inode.kind {
-        // find path from inode
         let path = proc.fs.path_map.iter().find_map(|(p, i)| if *i == inode_num { Some(p.clone()) } else { None }).unwrap();
         proc.fs.current_directory = path;
         0
@@ -901,10 +1099,9 @@ pub extern "C" fn wasm_vfs_fchdir(fd: i32) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_chmod(path: *const i8, mode: u32) -> i32 {
-    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
+    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy() };
 
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
     let abs_path = proc.get_absolute_path(&PathBuf::from(path_str));
 
     let inode_num = match proc.fs.lookup_inode_by_path(&abs_path) {
@@ -923,7 +1120,6 @@ pub extern "C" fn wasm_vfs_chmod(path: *const i8, mode: u32) -> i32 {
 #[no_mangle]
 pub extern "C" fn wasm_vfs_fchmod(fd: i32, mode: u32) -> i32 {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     let inode_num = match proc.fd_table.get(fd as usize) {
         Some(Some(i)) => *i,
@@ -945,10 +1141,9 @@ pub extern "C" fn wasm_vfs_fchmodat(_dirfd: i32, pathname: *const i8, mode: u32,
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_chown(path: *const i8, owner: u32, group: u32) -> i32 {
-    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
+    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy() };
 
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
     let abs_path = proc.get_absolute_path(&PathBuf::from(path_str));
 
     let inode_num = match proc.fs.lookup_inode_by_path(&abs_path) {
@@ -973,7 +1168,6 @@ pub extern "C" fn wasm_vfs_lchown(path: *const i8, owner: u32, group: u32) -> i3
 #[no_mangle]
 pub extern "C" fn wasm_vfs_fchown(fd: i32, owner: u32, group: u32) -> i32 {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     let inode_num = match proc.fd_table.get(fd as usize) {
         Some(Some(i)) => *i,
@@ -996,9 +1190,8 @@ pub extern "C" fn wasm_vfs_fchownat(_dirfd: i32, pathname: *const i8, owner: u32
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_access(path: *const i8, mode: i32) -> i32 {
-    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
+    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy() };
     let proc = get_or_init_proc();
-    let proc = proc.as_ref().unwrap();
 
     let abs_path = proc.get_absolute_path(&PathBuf::from(path_str));
     let inode_num = match proc.fs.lookup_inode_by_path(&abs_path) {
@@ -1022,7 +1215,6 @@ pub extern "C" fn wasm_vfs_faccessat(_dirfd: i32, pathname: *const i8, mode: i32
 #[no_mangle]
 pub extern "C" fn wasm_vfs_umask(mask: u32) -> u32 {
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
     let old = proc.umask_value;
     proc.umask_value = mask & 0o777;
     old
@@ -1030,11 +1222,10 @@ pub extern "C" fn wasm_vfs_umask(mask: u32) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_rename(oldpath: *const i8, newpath: *const i8) -> i32 {
-    let old_str = unsafe { CStr::from_ptr(oldpath).to_string_lossy().into_owned() };
-    let new_str = unsafe { CStr::from_ptr(newpath).to_string_lossy().into_owned() };
+    let old_str = unsafe { CStr::from_ptr(oldpath).to_string_lossy() };
+    let new_str = unsafe { CStr::from_ptr(newpath).to_string_lossy() };
 
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     let old_abs = proc.get_absolute_path(&PathBuf::from(old_str));
     let new_abs = proc.get_absolute_path(&PathBuf::from(new_str));
@@ -1053,7 +1244,6 @@ pub extern "C" fn wasm_vfs_rename(oldpath: *const i8, newpath: *const i8) -> i32
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_renameat(olddirfd: i32, oldpath: *const i8, newdirfd: i32, newpath: *const i8) -> i32 {
-    // ignoring dirfd for simplicity
     wasm_vfs_rename(oldpath, newpath)
 }
 
@@ -1064,11 +1254,10 @@ pub extern "C" fn wasm_vfs_renameat2(olddirfd: i32, oldpath: *const i8, newdirfd
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_link(oldpath: *const i8, newpath: *const i8) -> i32 {
-    let old_str = unsafe { CStr::from_ptr(oldpath).to_string_lossy().into_owned() };
-    let new_str = unsafe { CStr::from_ptr(newpath).to_string_lossy().into_owned() };
+    let old_str = unsafe { CStr::from_ptr(oldpath).to_string_lossy() };
+    let new_str = unsafe { CStr::from_ptr(newpath).to_string_lossy() };
 
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     let old_abs = proc.get_absolute_path(&PathBuf::from(old_str));
     let new_abs = proc.get_absolute_path(&PathBuf::from(new_str));
@@ -1077,7 +1266,6 @@ pub extern "C" fn wasm_vfs_link(oldpath: *const i8, newpath: *const i8) -> i32 {
         Some(i) => i,
         None => return -1,
     };
-    // hard link: just add another path_map entry to the same inode.
     proc.fs.path_map.insert(new_abs, inode_num);
     0
 }
@@ -1089,9 +1277,8 @@ pub extern "C" fn wasm_vfs_linkat(olddirfd: i32, oldpath: *const i8, newdirfd: i
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_unlink(pathname: *const i8) -> i32 {
-    let path_str = unsafe { CStr::from_ptr(pathname).to_string_lossy().into_owned() };
+    let path_str = unsafe { CStr::from_ptr(pathname).to_string_lossy() };
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     let abs_path = proc.get_absolute_path(&PathBuf::from(path_str));
     let inode_num = match proc.fs.lookup_inode_by_path(&abs_path) {
@@ -1099,7 +1286,6 @@ pub extern "C" fn wasm_vfs_unlink(pathname: *const i8) -> i32 {
         None => return -1,
     };
 
-    // if directory, fail
     let inode = proc.get_inode(inode_num).unwrap();
     if let InodeKind::Directory = inode.kind {
         return -1;
@@ -1117,11 +1303,10 @@ pub extern "C" fn wasm_vfs_unlinkat(dirfd: i32, pathname: *const i8, flags: i32)
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_symlink(target: *const i8, linkpath: *const i8) -> i32 {
-    let target_str = unsafe { CStr::from_ptr(target).to_string_lossy().into_owned() };
-    let link_str = unsafe { CStr::from_ptr(linkpath).to_string_lossy().into_owned() };
+    let target_str = unsafe { CStr::from_ptr(target).to_string_lossy() };
+    let link_str = unsafe { CStr::from_ptr(linkpath).to_string_lossy() };
 
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     let link_abs = proc.get_absolute_path(&PathBuf::from(link_str));
     let inode_number = proc.fs.next_inode_number;
@@ -1139,9 +1324,8 @@ pub extern "C" fn wasm_vfs_symlinkat(target: *const i8, newdirfd: i32, linkpath:
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_readlink(path: *const i8, buf: *mut i8, bufsize: usize) -> isize {
-    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
+    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy() };
     let proc = get_or_init_proc();
-    let proc = proc.as_ref().unwrap();
 
     let abs_path = proc.get_absolute_path(&PathBuf::from(path_str));
     let inode_num = match proc.fs.lookup_inode_by_path(&abs_path) {
@@ -1153,9 +1337,9 @@ pub extern "C" fn wasm_vfs_readlink(path: *const i8, buf: *mut i8, bufsize: usiz
         InodeKind::SymbolicLink(t) => {
             let loss = t.to_string_lossy();
             let bytes = loss.as_bytes();
-            let to_copy = cmp::min(bytes.len(), bufsize);
+            let to_copy = min(bytes.len(), bufsize);
             unsafe {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, to_copy);
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, to_copy);
             }
             to_copy as isize
         }
@@ -1170,10 +1354,9 @@ pub extern "C" fn wasm_vfs_readlinkat(dirfd: i32, pathname: *const i8, buf: *mut
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_mkdir(path: *const i8, mode: u32) -> i32 {
-    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
+    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy() };
 
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     let abs_path = proc.get_absolute_path(&PathBuf::from(path_str));
 
@@ -1199,10 +1382,9 @@ pub extern "C" fn wasm_vfs_mkdirat(dirfd: i32, pathname: *const i8, mode: u32) -
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_rmdir(path: *const i8) -> i32 {
-    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
+    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy() };
 
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     let abs_path = proc.get_absolute_path(&PathBuf::from(path_str));
 
@@ -1229,9 +1411,8 @@ pub extern "C" fn wasm_vfs_rmdir(path: *const i8) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn wasm_vfs_truncate(path: *const i8, length: i64) -> i32 {
-    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
+    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy() };
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
 
     let abs_path = proc.get_absolute_path(&PathBuf::from(path_str));
     let inode_num = match proc.fs.lookup_inode_by_path(&abs_path) {
@@ -1252,7 +1433,6 @@ pub extern "C" fn wasm_vfs_ftruncate(fd: i32, length: i64) -> i32 {
     }
 
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
     let inode_num = match proc.fd_table.get(fd as usize) {
         Some(Some(i)) => *i,
         _ => return -1,
@@ -1268,7 +1448,6 @@ pub extern "C" fn wasm_vfs_fallocate(fd: i32, _mode: i32, offset: i64, len: i64)
     }
 
     let mut proc = get_or_init_proc();
-    let proc = proc.as_mut().unwrap();
     let inode_num = match proc.fd_table.get(fd as usize) {
         Some(Some(i)) => *i,
         _ => return -1,
@@ -1305,7 +1484,7 @@ pub extern "C" fn wasm_vfs_flock(fd: i32, _operation: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn wasm_vfs_mmap(_addr: *mut u8, _length: usize, _prot: i32, _flags: i32, _fd: i32, _offset: isize) -> *mut u8 {
     // not supported in this in-memory fs
-    std::ptr::null_mut()
+    core::ptr::null_mut()
 }
 
 #[no_mangle]
@@ -1380,94 +1559,92 @@ pub extern "C" fn wasm_vfs_inotify_rm_watch(_fd: i32, _wd: i32) -> i32 {
 // -----------------------------------------------------------
 // helper function to populate/mount a host directory into wasm-vfs
 
-#[cfg(feature = "std")]
-pub fn mount_host_directory(host_path: &path, mount_path: &path) -> result<(), std::io::error> {
-    use std::fs;
-    let mut proc = global_proc.lock().unwrap();
-    if proc.is_none() {
-        *proc = Some(proc::new());
-    }
-    let proc = proc.as_mut().unwrap();
+//#[cfg(feature = "std")]
+//pub fn mount_host_directory(host_path: &path, mount_path: &path) -> result<(), std::io::error> {
+    //use std::fs;
+    //let mut proc = global_proc.lock().unwrap();
+    //if proc.is_none() {
+        //*proc = Some(proc::new());
+    //}
 
-    // recursively copy host_path into in-memory fs at mount_path
-    fn recurse(proc: &mut proc, host: &path, vfs_path: &path) -> std::io::result<()> {
-        let meta = host.wasm_vfs_symlink_metadata()?;
-        if meta.is_dir() {
-            // mkdir
-            if vfs_path != path::new("/") {
-                let inode_number = proc.fs.next_inode_number;
-                proc.fs.next_inode_number += 1;
-                proc.fs.path_map.insert(vfs_path.to_path_buf(), inode_number);
-                let inode = Inode::new(
-                    inode_number,
-                    0,
-                    Permissions::from((0o755) as u16),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    InodeKind::Directory
-                );
-                while proc.fs.inodes.len() <= inode_number as usize {
-                    proc.fs.inodes.push(Inode::default());
-                }
-                proc.fs.inodes[inode_number as usize] = inode;
-                proc.fs.files.insert(inode_number, vec![]);
-            }
-            for entry in fs::read_dir(host)? {
-                let entry = entry?;
-                let name = entry.file_name();
-                let new_vfs_path = vfs_path.join(&name);
-                recurse(proc, &entry.path(), &new_vfs_path)?;
-            }
-        } else if meta.is_file() {
-            let inode_number = proc.fs.next_inode_number;
-            proc.fs.next_inode_number += 1;
-            proc.fs.path_map.insert(vfs_path.to_path_buf(), inode_number);
-            let data = fs::read(host)?;
-            let inode = Inode::new(
-                inode_number,
-                data.len() as u64,
-                Permissions::from((0o644) as u16),
-                0,
-                0,
-                0,
-                0,
-                0,
-                InodeKind::file
-            );
-            while proc.fs.inodes.len() <= inode_number as usize {
-                proc.fs.inodes.push(Inode::default());
-            }
-            proc.fs.inodes[inode_number as usize] = inode;
-            proc.fs.files.insert(inode_number, data);
-        } else if meta.file_type().is_symlink() {
-            let target = fs::read_link(host)?;
-            let inode_number = proc.fs.next_inode_number;
-            proc.fs.next_inode_number += 1;
-            proc.fs.path_map.insert(vfs_path.to_path_buf(), inode_number);
-            let inode = Inode::new(
-                inode_number,
-                0,
-                Permissions::from((0o777) as u16),
-                0,
-                0,
-                0,
-                0,
-                0,
-                InodeKind::SymbolicLink(target),
-            );
-            while proc.fs.inodes.len() <= inode_number as usize {
-                proc.fs.inodes.push(Inode::default());
-            }
-            proc.fs.inodes[inode_number as usize] = inode;
-        }
 
-        Ok(())
-    }
+    //fn recurse(proc: &mut proc, host: &path, vfs_path: &path) -> std::io::result<()> {
+        //let meta = host.wasm_vfs_symlink_metadata()?;
+        //if meta.is_dir() {
+            //if vfs_path != path::new("/") {
+                //let inode_number = proc.fs.next_inode_number;
+                //proc.fs.next_inode_number += 1;
+                //proc.fs.path_map.insert(vfs_path.to_path_buf(), inode_number);
+                //let inode = Inode::new(
+                    //inode_number,
+                    //0,
+                    //Permissions::from((0o755) as u16),
+                    //0,
+                    //0,
+                    //0,
+                    //0,
+                    //0,
+                    //InodeKind::Directory
+                //);
+                //while proc.fs.inodes.len() <= inode_number as usize {
+                    //proc.fs.inodes.push(Inode::default());
+                //}
+                //proc.fs.inodes[inode_number as usize] = inode;
+                //proc.fs.files.insert(inode_number, vec![]);
+            //}
+            //for entry in fs::read_dir(host)? {
+                //let entry = entry?;
+                //let name = entry.file_name();
+                //let new_vfs_path = vfs_path.join(&name);
+                //recurse(proc, &entry.path(), &new_vfs_path)?;
+            //}
+        //} else if meta.is_file() {
+            //let inode_number = proc.fs.next_inode_number;
+            //proc.fs.next_inode_number += 1;
+            //proc.fs.path_map.insert(vfs_path.to_path_buf(), inode_number);
+            //let data = fs::read(host)?;
+            //let inode = Inode::new(
+                //inode_number,
+                //data.len() as u64,
+                //Permissions::from((0o644) as u16),
+                //0,
+                //0,
+                //0,
+                //0,
+                //0,
+                //InodeKind::file
+            //);
+            //while proc.fs.inodes.len() <= inode_number as usize {
+                //proc.fs.inodes.push(Inode::default());
+            //}
+            //proc.fs.inodes[inode_number as usize] = inode;
+            //proc.fs.files.insert(inode_number, data);
+        //} else if meta.file_type().is_symlink() {
+            //let target = fs::read_link(host)?;
+            //let inode_number = proc.fs.next_inode_number;
+            //proc.fs.next_inode_number += 1;
+            //proc.fs.path_map.insert(vfs_path.to_path_buf(), inode_number);
+            //let inode = Inode::new(
+                //inode_number,
+                //0,
+                //Permissions::from((0o777) as u16),
+                //0,
+                //0,
+                //0,
+                //0,
+                //0,
+                //InodeKind::SymbolicLink(target),
+            //);
+            //while proc.fs.inodes.len() <= inode_number as usize {
+                //proc.fs.inodes.push(Inode::default());
+            //}
+            //proc.fs.inodes[inode_number as usize] = inode;
+        //}
 
-    recurse(proc, host_path, mount_path)?;
+        //Ok(())
+    //}
 
-    Ok(())
-}
+    //recurse(proc, host_path, mount_path)?;
+
+    //Ok(())
+//}

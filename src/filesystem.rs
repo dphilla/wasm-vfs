@@ -1,6 +1,11 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+// filesystem.rs
+#![allow(dead_code)]
+
 use serde::{Serialize, Deserialize};
+
+// In project implementations - replaces rust's std crates:
+use crate::path::PathBuf;
+use crate::collections::HashMap;
 
 // In a unix filesystems, the field below would likely
 // be an i_block, with one or more pointers to the actual
@@ -15,17 +20,17 @@ pub enum InodeKind {
 }
 
 #[derive(Debug, Default, PartialEq, Clone, Hash, Eq, Serialize )]
-pub struct Permissions {
-    pub owner: Permission,
-    pub group: Permission,
-    pub other: Permission,
-}
-
-#[derive(Debug, Default, PartialEq, Clone, Hash, Eq, Serialize)]
 pub struct Permission {
     pub read: bool,
     pub write: bool,
     pub execute: bool,
+}
+
+#[derive(Debug, Default, PartialEq, Clone, Hash, Eq, Serialize)]
+pub struct Permissions {
+    pub owner: Permission,
+    pub group: Permission,
+    pub other: Permission,
 }
 
 impl From<u16> for Permissions {
@@ -37,14 +42,14 @@ impl From<u16> for Permissions {
                 execute: (mode & 0o100) != 0,
             },
             group: Permission {
-                read: (mode & 0o40) != 0,
-                write: (mode & 0o20) != 0,
-                execute: (mode & 0o10) != 0,
+                read: (mode & 0o040) != 0,
+                write: (mode & 0o020) != 0,
+                execute: (mode & 0o010) != 0,
             },
             other: Permission {
-                read: (mode & 0o4) != 0,
-                write: (mode & 0o2) != 0,
-                execute: (mode & 0o1) != 0,
+                read: (mode & 0o004) != 0,
+                write: (mode & 0o002) != 0,
+                execute: (mode & 0o001) != 0,
             },
         }
     }
@@ -64,8 +69,9 @@ pub struct Inode {
 }
 
 impl Inode {
-    pub fn new(number: u64, size: u64, permissions: Permissions, user_id: u32, group_id: u32,
-               ctime: u64, mtime: u64, atime: u64, kind: InodeKind) -> Self {
+    pub fn new(number: u64, size: u64, permissions: Permissions,
+               user_id: u32, group_id: u32, ctime: u64, mtime: u64, atime: u64,
+               kind: InodeKind) -> Self {
         Inode {
             number,
             size,
@@ -80,7 +86,11 @@ impl Inode {
     }
 }
 
-#[derive(Debug, Default)]
+// A minimal capacity for your path_map, say 256:
+const PATH_MAP_CAP: usize = 256;
+const FILES_CAP: usize = 256;
+
+#[derive(Debug)]
 pub struct FileSystem {
     // In a linux vfs, `inodes` would be indexed by inode number.
     // We'll ensure that the index in `inodes` matches the inode number:
@@ -89,8 +99,15 @@ pub struct FileSystem {
     pub next_inode_number: u64,
     pub current_directory: PathBuf,
     pub root_inode: Inode,
-    pub files: HashMap<u64, Vec<u8>>,
-    pub path_map: HashMap<PathBuf, u64>,
+    // Instead of std::collections::HashMap, we do custom HashMap
+    pub files: HashMap<u64, Vec<u8>, FILES_CAP>,
+    pub path_map: HashMap<PathBuf, u64, PATH_MAP_CAP>,
+}
+
+impl Default for FileSystem {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FileSystem {
@@ -106,24 +123,21 @@ impl FileSystem {
             0,
             InodeKind::Directory
         );
-
         let mut fs = Self {
             inodes: vec![root_inode.clone()],
             next_inode_number: 1,
             current_directory: PathBuf::from("/"),
             root_inode: root_inode,
-            files: HashMap::new(),
-            path_map: HashMap::new(),
+            files: HashMap::init(),
+            path_map: HashMap::init(),
         };
-
-        // Insert root directory into path_map
+        // Insert root dir
         fs.path_map.insert(PathBuf::from("/"), 0);
-
         fs
     }
 
     pub fn lookup_inode_by_path(&self, path: &PathBuf) -> Option<u64> {
-        self.path_map.get(path).cloned()
+        self.path_map.get(path).copied()
     }
 
     pub fn create_file(&mut self, path: &PathBuf, mode: u32) -> u64 {
@@ -141,11 +155,9 @@ impl FileSystem {
             0,
             InodeKind::File
         );
-
         self.inodes.push(inode.clone());
         self.path_map.insert(path.clone(), inode_number);
-        self.files.insert(inode_number, vec![]);
-
+        self.files.insert(inode_number, Vec::new());
         inode_number
     }
 }
