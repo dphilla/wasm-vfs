@@ -17,35 +17,9 @@ An implementation of a POSIX-compliant Filesystem, specifically made to target W
 
 ## Module-System Abstraction
 
- TODO - proc will be its own lib, integral for Process management stuff via marcotte, and more
-
- Each named thing is a separate Wasm module:
-
-
-                     pkc
-                     /|\
-                    / | \
-
- VFS --- Proc --- Net        ...
-   \      |      /
-    \     |     /
-         libc
-          |     (else: Interfaces to
-          |     devices, user
-          |     input, etc.)
-          |
-      User program
-
- -------------------
-
-
-## Building for C
-
-cargo rustc   --target wasm32-unknown-unknown   --release   --   --emit=obj   -C link-self-contained=yes -C link-args=    -o wasm_vfs.o
-
-- this gives you a relocatable/clang linkable wasm obj file to be able to use elsewhere, but especially with C
-
 ## Support -- please open an issue with questions
+
+for c ffi, prepended with `wasm_vfs_*`
 
 ### File Descriptor Management
 - `open`: Opens a file and returns a file descriptor.
