@@ -1,0 +1,33 @@
+{
+    "llvm-target": "wasm32-unknown-unknown",
+    "arch": "wasm32",
+    "os": "unknown",
+    "env": "",
+    "vendor": "",
+    "linker-flavor": "ld.lld",
+    "linker": "rust-lld",
+
+    // We want to forbid linking the built-in Rust standard libraries:
+    "no-default-libraries": true,
+    // If we used threads, we'd need TLS, but we're going minimal:
+    "has-thread-local": false,
+    // We don't want the compiler to automatically embed a runtime start:
+    "executables": false,
+
+    // Make sure we do not attempt to call unwinding or fallback runtime code:
+    "panic-strategy": "abort",
+    "relocation-model": "static",
+
+    // Let the compiler know it's basically a "bare" wasm environment
+    "is-like-bare": true,
+    "is-like-wasm": true,
+
+    // If you ever need atomics or bulk-memory, specify them. By default, it's empty.
+    "features": "",
+    "max-atomic-width": 32,
+
+    // These two lines help ensure we don't get default crate linkage:
+    "no-compiler-rt": true,
+    "disable-redzone": true
+}
+

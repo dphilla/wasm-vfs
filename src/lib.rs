@@ -1,7 +1,6 @@
 #![allow(warnings)]
 
 extern crate core;
-extern crate alloc;
 
 pub mod filesystem;
 mod system;
