@@ -365,19 +365,55 @@ pub extern "C" fn wasm_vfs_read(fd: i32, buf: *mut u8, count: usize) -> isize {
     to_read as isize
 }
 
+// TODO - this is all just until we do more sophisticated, (more closely resembling native)
+//        things with stdout (stderr, and stdin)
+#[link(wasm_import_module = "env")]
+extern "C" {
+    /// Host function that receives a single line (including the trailing newline).
+    /// The host environment can print it in xterm or a console, line by line.
+    fn box_host_write_stdout_line(ptr: *const u8, len: usize);
+}
+
+static mut STDOUT_LINE_ACCUM: Vec<u8> = Vec::new();
+
 #[no_mangle]
 pub extern "C" fn wasm_vfs_write(fd: i32, buf: *const u8, count: usize) -> isize {
-    let mut proc = get_or_init_proc();
+    // Special case: FD == 1 => "stdout"
+    if fd == 1 {
+        unsafe {
+            // Convert the incoming pointer+length into a slice
+            let incoming = core::slice::from_raw_parts(buf, count);
 
+            // Go through each byte, appending to STDOUT_LINE_ACCUM.
+            // Whenever we see '\n', we flush that line to the host function.
+            for &byte in incoming.iter() {
+                STDOUT_LINE_ACCUM.push(byte);
+                if byte == b'\n' {
+                    // We have a full line in STDOUT_LINE_ACCUM
+                    box_host_write_stdout_line(
+                        STDOUT_LINE_ACCUM.as_ptr(),
+                        STDOUT_LINE_ACCUM.len(),
+                    );
+                    // Clear the accumulator
+                    STDOUT_LINE_ACCUM.clear();
+                }
+            }
+        }
+        // let's pretend that we wrote all 'count' bytes successfully
+        return count as isize;
+    }
+
+    // -- Otherwise, do the regular in-memory file logic --
+
+    let mut proc = get_or_init_proc();
 
     let (inode_num, old_pos, append_mode) = {
         let handle = match proc.open_files.get_mut(&fd) {
             Some(h) => h,
             None => return -1,
         };
-        (handle.inode_number, handle.position, handle.append_mode)
+        (h.inode_number, handle.position, handle.append_mode)
     };
-
 
     let new_position = {
         let data = match proc.fs.files.get_mut(&inode_num) {
@@ -385,37 +421,26 @@ pub extern "C" fn wasm_vfs_write(fd: i32, buf: *const u8, count: usize) -> isize
             None => return -1,
         };
         let mut actual_pos = if append_mode { data.len() as u64 } else { old_pos };
-
         if actual_pos as usize + count > data.len() {
             data.resize(actual_pos as usize + count, 0);
         }
         unsafe {
-            std::ptr::copy_nonoverlapping(buf, data.as_mut_ptr().add(actual_pos as usize), count);
+            core::ptr::copy_nonoverlapping(buf, data.as_mut_ptr().add(actual_pos as usize), count);
         }
         actual_pos += count as u64;
-
-
         actual_pos
     };
 
-
-    {
-        if let Some(handle2) = proc.open_files.get_mut(&fd) {
-            handle2.position = new_position;
-        }
+    if let Some(handle2) = proc.open_files.get_mut(&fd) {
+        handle2.position = new_position;
     }
-
-
-    {
-
-        let final_size = proc.fs.files.get(&inode_num).map(|v| v.len()).unwrap_or(0);
-        if let Some(inode) = proc.fs.inodes.get_mut(inode_num as usize) {
-            inode.size = final_size as u64;
-        }
+    let final_size = proc.fs.files.get(&inode_num).map(|v| v.len()).unwrap_or(0);
+    if let Some(inode) = proc.fs.inodes.get_mut(inode_num as usize) {
+        inode.size = final_size as u64;
     }
-
     count as isize
 }
+
 
 
 #[no_mangle]
