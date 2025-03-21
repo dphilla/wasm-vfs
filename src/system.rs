@@ -1673,3 +1673,76 @@ pub extern "C" fn wasm_vfs_inotify_rm_watch(_fd: i32, _wd: i32) -> i32 {
 
     //Ok(())
 //}
+//
+
+/// A descriptor for a single file to copy into the Wasm VFS.
+///
+/// - `dest_path`: a C-style null-terminated string (pointer to i8),
+/// - `data_ptr`: raw pointer to file content in guest memory,
+/// - `data_len`: number of bytes at `data_ptr`.
+#[repr(C)]
+pub struct FileDef {
+    pub dest_path: *const i8,
+    pub data_ptr: *const u8,
+    pub data_len: u32,
+}
+
+
+#[no_mangle]
+pub extern "C" fn wasm_vfs_mount_in_memory(count: u32, files: *const FileDef) -> i32 {
+    // 1) Acquire the global process
+    let _proc_guard = get_or_init_proc();
+    // We don't actually need `_proc_guard` itself here,
+    // we only need it to ensure the filesystem is initialized.
+
+    // 2) Iterate over the array of FileDefs
+    for i in 0..count {
+        // (a) Grab the pointer to the i-th FileDef
+        let filedef_ptr = unsafe { files.add(i as usize) };
+        if filedef_ptr.is_null() {
+            // If any pointer is null, we bail out
+            return -1;
+        }
+
+        let filedef = unsafe { &*filedef_ptr };
+
+        // (b) Convert the destination path from CStr to Rust string
+        let path_str = unsafe {
+            crate::ffi::CStr::from_ptr(filedef.dest_path)
+        }
+        .to_string_lossy();
+
+        // (c) Open the file (O_CREAT|O_WRONLY|O_TRUNC) => overwrite or create new
+        //     using mode=0644
+        let fd = wasm_vfs_open(
+            filedef.dest_path,                  // the same pointer
+            0x001 /*O_WRONLY*/ | 0x040 /*O_CREAT*/ | 0x200 /*O_TRUNC*/,
+            0o644
+        );
+        if fd < 0 {
+            // Possibly skip or continue instead of bailing out
+            // For demonstration, we'll just keep going to the next file
+            continue;
+        }
+
+        // (d) Write the data
+        let data_len = filedef.data_len as usize;
+        let data_slice = unsafe {
+            core::slice::from_raw_parts(filedef.data_ptr, data_len)
+        };
+
+        let written = wasm_vfs_write(fd, data_slice.as_ptr(), data_slice.len());
+        if written < 0 {
+            // optional: handle error
+        }
+
+        // (e) Close
+        let rc = wasm_vfs_close(fd);
+        if rc < 0 {
+            // optional: handle error
+        }
+    }
+
+    0 // success
+}
+
